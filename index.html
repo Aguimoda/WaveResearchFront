@@ -1,0 +1,3551 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SubvencionesAI - Búsqueda Inteligente de Subvenciones</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #0ea5e9;
+            --secondary: #64748b;
+            --accent: #f59e0b;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --background: #ffffff;
+            --surface: #f8fafc;
+            --text-primary: #0f172a;
+            --text-secondary: #64748b;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--background);
+            color: var(--text-primary);
+        }
+        
+        .gradient-bg {
+            background: linear-gradient(135deg, #0ea5e9 0%, #3b82f6 100%);
+        }
+        
+        .card-hover {
+            transition: all 0.3s ease;
+        }
+        
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        }
+        
+        .relevance-perfect { background: #10b981; }
+        .relevance-high { background: #0ea5e9; }
+        .relevance-good { background: #f59e0b; }
+        .relevance-low { background: #64748b; }
+        
+        .urgency-critical { background: #ef4444; }
+        .urgency-high { background: #f59e0b; }
+        .urgency-medium { background: #3b82f6; }
+        .urgency-low { background: #10b981; }
+        
+        .skeleton {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+        }
+        
+        @keyframes loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        
+        .modal-backdrop {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        
+        .toast {
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        .filter-range {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 6px;
+            border-radius: 3px;
+            background: #e2e8f0;
+            outline: none;
+        }
+        
+        .filter-range::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+        }
+        
+        .filter-range::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+        
+        // Función para cargar variables de entorno
+        const loadEnvConfig = async () => {
+            try {
+                const response = await fetch('/.env');
+                if (!response.ok) {
+                    console.warn('No se pudo cargar el archivo .env, usando valores por defecto');
+                    return {};
+                }
+                const envText = await response.text();
+                const envVars = {};
+                
+                envText.split('\n').forEach(line => {
+                    line = line.trim();
+                    if (line && !line.startsWith('#') && line.includes('=')) {
+                        const [key, ...valueParts] = line.split('=');
+                        envVars[key.trim()] = valueParts.join('=').trim();
+                    }
+                });
+                
+                return envVars;
+            } catch (error) {
+                console.warn('Error cargando variables de entorno:', error);
+                return {};
+            }
+        };
+        
+        // Configuración por defecto (fallback)
+        const DEFAULT_CONFIG = {
+            N8N_BASE_URL: 'http://localhost:5678',
+            N8N_WEBHOOK_URL: 'http://localhost:5678/webhook/boe-search',
+            N8N_API_KEY: '',
+            SUPABASE_URL: 'https://your-project.supabase.co',
+            SUPABASE_ANON_KEY: 'your-anon-key',
+            SUPABASE_TABLE_NAME: 'grants',
+            BOE_API_URL: 'https://www.boe.es/datosabiertos/api',
+            EUROPA_API_URL: 'https://ec.europa.eu/info/funding-tenders/opportunities/rest',
+            CDTI_API_URL: 'https://www.cdti.es/api',
+            DEFAULT_AMOUNT_MIN: '0',
+            DEFAULT_AMOUNT_MAX: '1000000',
+            DEFAULT_SEARCH_RADIUS_KM: '50',
+            NOTIFICATIONS_ENABLED: 'true',
+            NOTIFICATIONS_CHECK_INTERVAL: '300000',
+            AI_EVALUATION_ENABLED: 'true',
+            AI_MODEL_PROVIDER: 'openai',
+            AI_MODEL_NAME: 'gpt-4',
+            AI_API_KEY: ''
+        };
+        
+        // Variable global para la configuración
+        let ENV_CONFIG = { ...DEFAULT_CONFIG };
+        
+        // Configuración de n8n (se actualizará con las variables de entorno)
+        const N8N_CONFIG = {
+            get baseUrl() { return ENV_CONFIG.N8N_BASE_URL; },
+            get webhookUrl() { return ENV_CONFIG.N8N_WEBHOOK_URL; },
+            get apiKey() { return ENV_CONFIG.N8N_API_KEY; }
+        };
+
+        // Sistema de Filtros Inteligentes
+        class EntityExtractor {
+            constructor() {
+                this.patterns = {
+                    amounts: /(?:€|euros?|\$|dolares?)\s*([\d,\.]+(?:[kmb])?)|([\d,\.]+(?:[kmb])?)\s*(?:€|euros?|\$|dolares?)/gi,
+                    sectors: {
+                        'digitalización': ['digital', 'tecnología', 'software', 'app', 'web', 'online', 'tic'],
+                        'sostenibilidad': ['sostenible', 'verde', 'ecológico', 'medio ambiente', 'renovable', 'eficiencia energética'],
+                        'i+d+i': ['investigación', 'desarrollo', 'innovación', 'i+d', 'tecnológico', 'científico'],
+                        'internacionalización': ['exportación', 'internacional', 'exterior', 'mercados externos'],
+                        'formación': ['formación', 'capacitación', 'educación', 'cursos', 'aprendizaje'],
+                        'empleo': ['empleo', 'trabajo', 'contratación', 'recursos humanos', 'plantilla']
+                    },
+                    locations: ['madrid', 'barcelona', 'valencia', 'sevilla', 'andalucía', 'cataluña', 'nacional', 'europea'],
+                    urgency: {
+                        'alta': ['urgente', 'inmediato', 'pronto', 'rápido', 'ya'],
+                        'media': ['próximo', 'siguiente', 'futuro'],
+                        'baja': ['largo plazo', 'eventual', 'cuando sea posible']
+                    }
+                };
+            }
+
+            extractEntities(text) {
+                const entities = {
+                    amounts: [],
+                    sectors: [],
+                    locations: [],
+                    urgency: 'media',
+                    keywords: []
+                };
+
+                const lowerText = text.toLowerCase();
+
+                // Extraer montos
+                const amountMatches = text.match(this.patterns.amounts);
+                if (amountMatches) {
+                    entities.amounts = amountMatches.map(match => {
+                        const num = parseFloat(match.replace(/[^\d\.]/g, ''));
+                        if (match.includes('k')) return num * 1000;
+                        if (match.includes('m')) return num * 1000000;
+                        if (match.includes('b')) return num * 1000000000;
+                        return num;
+                    });
+                }
+
+                // Extraer sectores
+                Object.entries(this.patterns.sectors).forEach(([sector, keywords]) => {
+                    if (keywords.some(keyword => lowerText.includes(keyword))) {
+                        entities.sectors.push(sector);
+                    }
+                });
+
+                // Extraer ubicaciones
+                this.patterns.locations.forEach(location => {
+                    if (lowerText.includes(location)) {
+                        entities.locations.push(location);
+                    }
+                });
+
+                // Extraer urgencia
+                Object.entries(this.patterns.urgency).forEach(([level, keywords]) => {
+                    if (keywords.some(keyword => lowerText.includes(keyword))) {
+                        entities.urgency = level;
+                    }
+                });
+
+                // Extraer palabras clave generales
+                entities.keywords = text.split(/\s+/).filter(word => 
+                    word.length > 3 && 
+                    !['para', 'con', 'por', 'que', 'una', 'del', 'las', 'los', 'este', 'esta'].includes(word.toLowerCase())
+                );
+
+                return entities;
+            }
+        }
+
+        class IntentAnalyzer {
+            constructor() {
+                this.intents = {
+                    'buscar_subvenciones': {
+                        patterns: ['buscar', 'encontrar', 'necesito', 'quiero', 'ayuda'],
+                        confidence: 0.8
+                    },
+                    'filtrar_resultados': {
+                        patterns: ['filtrar', 'mostrar solo', 'que sean', 'con'],
+                        confidence: 0.7
+                    },
+                    'comparar_opciones': {
+                        patterns: ['comparar', 'diferencias', 'mejor opción', 'cuál'],
+                        confidence: 0.6
+                    },
+                    'obtener_detalles': {
+                        patterns: ['detalles', 'información', 'requisitos', 'cómo'],
+                        confidence: 0.5
+                    }
+                };
+            }
+
+            analyzeIntent(text) {
+                const lowerText = text.toLowerCase();
+                let bestIntent = 'buscar_subvenciones';
+                let maxScore = 0;
+
+                Object.entries(this.intents).forEach(([intent, config]) => {
+                    const score = config.patterns.reduce((acc, pattern) => {
+                        return acc + (lowerText.includes(pattern) ? config.confidence : 0);
+                    }, 0);
+
+                    if (score > maxScore) {
+                        maxScore = score;
+                        bestIntent = intent;
+                    }
+                });
+
+                return {
+                    intent: bestIntent,
+                    confidence: maxScore,
+                    suggestions: this.generateSuggestions(bestIntent)
+                };
+            }
+
+            generateSuggestions(intent) {
+                const suggestions = {
+                    'buscar_subvenciones': [
+                        'Especifica el sector de tu empresa',
+                        'Indica el rango de financiación que necesitas',
+                        'Menciona tu ubicación geográfica'
+                    ],
+                    'filtrar_resultados': [
+                        'Usa filtros por fecha límite',
+                        'Filtra por monto mínimo/máximo',
+                        'Selecciona categorías específicas'
+                    ],
+                    'comparar_opciones': [
+                        'Revisa los criterios de elegibilidad',
+                        'Compara montos y plazos',
+                        'Evalúa la dificultad de aplicación'
+                    ],
+                    'obtener_detalles': [
+                        'Consulta los requisitos específicos',
+                        'Revisa la documentación necesaria',
+                        'Verifica las fechas importantes'
+                    ]
+                };
+
+                return suggestions[intent] || [];
+            }
+        }
+
+        class SemanticSearchEngine {
+            constructor() {
+                this.stopWords = new Set([
+                    'el', 'la', 'de', 'que', 'y', 'a', 'en', 'un', 'es', 'se', 'no', 'te', 'lo', 'le', 'da', 'su', 'por', 'son', 'con', 'para', 'al', 'del', 'los', 'las', 'una', 'este', 'esta', 'estos', 'estas'
+                ]);
+            }
+
+            calculateSimilarity(text1, text2) {
+                const tokens1 = this.tokenize(text1);
+                const tokens2 = this.tokenize(text2);
+                
+                const intersection = tokens1.filter(token => tokens2.includes(token));
+                const union = [...new Set([...tokens1, ...tokens2])];
+                
+                return intersection.length / union.length;
+            }
+
+            tokenize(text) {
+                return text.toLowerCase()
+                    .replace(/[^\w\s]/g, '')
+                    .split(/\s+/)
+                    .filter(token => token.length > 2 && !this.stopWords.has(token));
+            }
+
+            searchGrants(query, grants) {
+                const queryTokens = this.tokenize(query);
+                
+                return grants.map(grant => {
+                    const titleSimilarity = this.calculateSimilarity(query, grant.title);
+                    const descriptionSimilarity = this.calculateSimilarity(query, grant.description || '');
+                    const categorySimilarity = grant.category ? 
+                        this.calculateSimilarity(query, grant.category) : 0;
+                    
+                    const semanticScore = (
+                        titleSimilarity * 0.5 +
+                        descriptionSimilarity * 0.3 +
+                        categorySimilarity * 0.2
+                    );
+                    
+                    return {
+                        ...grant,
+                        semanticScore,
+                        relevanceReasons: this.generateRelevanceReasons(query, grant, semanticScore)
+                    };
+                }).sort((a, b) => b.semanticScore - a.semanticScore);
+            }
+
+            generateRelevanceReasons(query, grant, score) {
+                const reasons = [];
+                const queryTokens = this.tokenize(query);
+                
+                queryTokens.forEach(token => {
+                    if (grant.title.toLowerCase().includes(token)) {
+                        reasons.push(`Coincidencia en título: "${token}"`);
+                    }
+                    if (grant.description && grant.description.toLowerCase().includes(token)) {
+                        reasons.push(`Coincidencia en descripción: "${token}"`);
+                    }
+                    if (grant.category && grant.category.toLowerCase().includes(token)) {
+                        reasons.push(`Coincidencia en categoría: "${token}"`);
+                    }
+                });
+                
+                if (score > 0.7) reasons.push('Alta relevancia semántica');
+                else if (score > 0.4) reasons.push('Relevancia media');
+                
+                return reasons;
+            }
+        }
+
+        class UserProfile {
+            constructor() {
+                this.preferences = this.loadPreferences();
+                this.searchHistory = this.loadSearchHistory();
+                this.interactionHistory = this.loadInteractionHistory();
+            }
+
+            loadPreferences() {
+                const saved = localStorage.getItem('userPreferences');
+                return saved ? JSON.parse(saved) : {
+                    preferredSectors: [],
+                    preferredRegions: [],
+                    amountRange: { min: 0, max: 1000000 },
+                    urgencyPreference: 'media',
+                    searchFrequency: {},
+                    clickedGrants: [],
+                    savedSearches: []
+                };
+            }
+
+            loadSearchHistory() {
+                const saved = localStorage.getItem('searchHistory');
+                return saved ? JSON.parse(saved) : [];
+            }
+
+            loadInteractionHistory() {
+                const saved = localStorage.getItem('interactionHistory');
+                return saved ? JSON.parse(saved) : [];
+            }
+
+            updateSearchHistory(query, results) {
+                this.searchHistory.unshift({
+                    query,
+                    timestamp: Date.now(),
+                    resultCount: results.length,
+                    topResults: results.slice(0, 3).map(r => r.id)
+                });
+                
+                // Mantener solo los últimos 50 búsquedas
+                this.searchHistory = this.searchHistory.slice(0, 50);
+                localStorage.setItem('searchHistory', JSON.stringify(this.searchHistory));
+            }
+
+            updateInteraction(grantId, action) {
+                this.interactionHistory.unshift({
+                    grantId,
+                    action, // 'view', 'click', 'save', 'apply'
+                    timestamp: Date.now()
+                });
+                
+                this.interactionHistory = this.interactionHistory.slice(0, 200);
+                localStorage.setItem('interactionHistory', JSON.stringify(this.interactionHistory));
+                
+                this.updatePreferences(grantId, action);
+            }
+
+            updatePreferences(grantId, action) {
+                // Actualizar preferencias basadas en interacciones
+                const grant = mockGrants.find(g => g.id === grantId);
+                if (!grant) return;
+                
+                if (action === 'click' || action === 'save') {
+                    // Incrementar preferencia por sector
+                    if (grant.category) {
+                        this.preferences.searchFrequency[grant.category] = 
+                            (this.preferences.searchFrequency[grant.category] || 0) + 1;
+                    }
+                    
+                    // Actualizar sectores preferidos
+                    if (grant.category && !this.preferences.preferredSectors.includes(grant.category)) {
+                        this.preferences.preferredSectors.push(grant.category);
+                    }
+                }
+                
+                localStorage.setItem('userPreferences', JSON.stringify(this.preferences));
+            }
+
+            getPersonalizedFilters() {
+                const filters = {
+                    categories: this.preferences.preferredSectors.slice(0, 3),
+                    regions: this.preferences.preferredRegions.slice(0, 2),
+                    amountRange: this.preferences.amountRange
+                };
+                
+                // Agregar filtros basados en historial reciente
+                const recentSearches = this.searchHistory.slice(0, 10);
+                const commonTerms = this.extractCommonTerms(recentSearches.map(s => s.query));
+                
+                return {
+                    ...filters,
+                    suggestedKeywords: commonTerms,
+                    confidence: this.calculateConfidence()
+                };
+            }
+
+            extractCommonTerms(queries) {
+                const termFreq = {};
+                queries.forEach(query => {
+                    const terms = query.toLowerCase().split(/\s+/);
+                    terms.forEach(term => {
+                        if (term.length > 3) {
+                            termFreq[term] = (termFreq[term] || 0) + 1;
+                        }
+                    });
+                });
+                
+                return Object.entries(termFreq)
+                    .sort(([,a], [,b]) => b - a)
+                    .slice(0, 5)
+                    .map(([term]) => term);
+            }
+
+            calculateConfidence() {
+                const historyLength = this.searchHistory.length;
+                const interactionLength = this.interactionHistory.length;
+                
+                return Math.min(1, (historyLength + interactionLength) / 100);
+            }
+        }
+
+        // Sistema principal de filtros inteligentes
+        class IntelligentFilterSystem {
+            constructor() {
+                this.entityExtractor = new EntityExtractor();
+                this.intentAnalyzer = new IntentAnalyzer();
+                this.semanticSearch = new SemanticSearchEngine();
+                this.userProfile = new UserProfile();
+            }
+
+            async processQuery(query, grants) {
+                // Extraer entidades del query
+                const entities = this.entityExtractor.extractEntities(query);
+                
+                // Analizar intención
+                const intentAnalysis = this.intentAnalyzer.analyzeIntent(query);
+                
+                // Obtener filtros personalizados
+                const personalizedFilters = this.userProfile.getPersonalizedFilters();
+                
+                // Realizar búsqueda semántica
+                const semanticResults = this.semanticSearch.searchGrants(query, grants);
+                
+                // Aplicar filtros inteligentes
+                const filteredResults = this.applyIntelligentFilters(
+                    semanticResults, 
+                    entities, 
+                    personalizedFilters
+                );
+                
+                // Actualizar historial de usuario
+                this.userProfile.updateSearchHistory(query, filteredResults);
+                
+                return {
+                    results: filteredResults,
+                    entities,
+                    intent: intentAnalysis,
+                    personalizedFilters,
+                    suggestions: this.generateSmartSuggestions(entities, intentAnalysis)
+                };
+            }
+
+            applyIntelligentFilters(results, entities, personalizedFilters) {
+                return results.filter(grant => {
+                    // Filtro por monto si se especificó
+                    if (entities.amounts.length > 0) {
+                        const minAmount = Math.min(...entities.amounts);
+                        const maxAmount = Math.max(...entities.amounts);
+                        if (grant.amount < minAmount || grant.amount > maxAmount) {
+                            return false;
+                        }
+                    }
+                    
+                    // Filtro por sectores
+                    if (entities.sectors.length > 0) {
+                        const grantCategory = grant.category?.toLowerCase() || '';
+                        if (!entities.sectors.some(sector => 
+                            grantCategory.includes(sector) || 
+                            grant.title.toLowerCase().includes(sector)
+                        )) {
+                            return false;
+                        }
+                    }
+                    
+                    // Filtro por ubicación
+                    if (entities.locations.length > 0) {
+                        const grantRegion = grant.region?.toLowerCase() || '';
+                        if (!entities.locations.some(location => 
+                            grantRegion.includes(location) || 
+                            grant.title.toLowerCase().includes(location)
+                        )) {
+                            return false;
+                        }
+                    }
+                    
+                    return true;
+                }).map(grant => {
+                    // Calcular puntuación combinada
+                    const personalizedScore = this.calculatePersonalizedScore(grant, personalizedFilters);
+                    const combinedScore = (grant.semanticScore * 0.7) + (personalizedScore * 0.3);
+                    
+                    return {
+                        ...grant,
+                        personalizedScore,
+                        combinedScore
+                    };
+                }).sort((a, b) => b.combinedScore - a.combinedScore);
+            }
+
+            calculatePersonalizedScore(grant, personalizedFilters) {
+                let score = 0;
+                
+                // Bonus por sectores preferidos
+                if (personalizedFilters.categories.includes(grant.category)) {
+                    score += 0.3;
+                }
+                
+                // Bonus por regiones preferidas
+                if (personalizedFilters.regions.includes(grant.region)) {
+                    score += 0.2;
+                }
+                
+                // Bonus por rango de monto preferido
+                if (grant.amount >= personalizedFilters.amountRange.min && 
+                    grant.amount <= personalizedFilters.amountRange.max) {
+                    score += 0.2;
+                }
+                
+                // Bonus por palabras clave frecuentes
+                if (personalizedFilters.suggestedKeywords) {
+                    const titleLower = grant.title.toLowerCase();
+                    const keywordMatches = personalizedFilters.suggestedKeywords.filter(keyword => 
+                        titleLower.includes(keyword)
+                    ).length;
+                    score += (keywordMatches / personalizedFilters.suggestedKeywords.length) * 0.3;
+                }
+                
+                return Math.min(1, score);
+            }
+
+            generateSmartSuggestions(entities, intentAnalysis) {
+                const suggestions = [...intentAnalysis.suggestions];
+                
+                // Sugerencias basadas en entidades extraídas
+                if (entities.sectors.length === 0) {
+                    suggestions.push('💡 Especifica el sector de tu empresa para mejores resultados');
+                }
+                
+                if (entities.amounts.length === 0) {
+                    suggestions.push('💰 Indica el rango de financiación que necesitas');
+                }
+                
+                if (entities.locations.length === 0) {
+                    suggestions.push('📍 Menciona tu ubicación para filtrar por región');
+                }
+                
+                return suggestions.slice(0, 5); // Máximo 5 sugerencias
+            }
+        }
+        
+        // Workflow Dashboard Component
+        const WorkflowDashboard = ({ isOpen, onClose, showToast }) => {
+            const [dashboardData, setDashboardData] = useState({
+                totalWorkflows: 0,
+                activeWorkflows: 0,
+                totalExecutions: 0,
+                successRate: 0,
+                avgExecutionTime: 0,
+                recentExecutions: [],
+                performanceMetrics: []
+            });
+            const [isLoading, setIsLoading] = useState(false);
+            const [timeRange, setTimeRange] = useState('24h');
+            
+            useEffect(() => {
+                if (isOpen) {
+                    loadDashboardData();
+                    const interval = setInterval(loadDashboardData, 30000); // Actualizar cada 30 segundos
+                    return () => clearInterval(interval);
+                }
+            }, [isOpen, timeRange]);
+            
+            const loadDashboardData = async () => {
+                setIsLoading(true);
+                try {
+                    // Simular datos del dashboard
+                    const mockData = {
+                        totalWorkflows: 5,
+                        activeWorkflows: 3,
+                        totalExecutions: 1247,
+                        successRate: 94.2,
+                        avgExecutionTime: 2.3,
+                        recentExecutions: [
+                            {
+                                id: 'exec-001',
+                                workflowName: 'Grant Evaluation',
+                                status: 'success',
+                                duration: 1.8,
+                                timestamp: new Date(Date.now() - 300000).toISOString(),
+                                itemsProcessed: 15
+                            },
+                            {
+                                id: 'exec-002',
+                                workflowName: 'Data Collection',
+                                status: 'success',
+                                duration: 3.2,
+                                timestamp: new Date(Date.now() - 600000).toISOString(),
+                                itemsProcessed: 8
+                            },
+                            {
+                                id: 'exec-003',
+                                workflowName: 'Notification',
+                                status: 'error',
+                                duration: 0.5,
+                                timestamp: new Date(Date.now() - 900000).toISOString(),
+                                itemsProcessed: 0,
+                                error: 'Connection timeout'
+                            },
+                            {
+                                id: 'exec-004',
+                                workflowName: 'Grant Evaluation',
+                                status: 'success',
+                                duration: 2.1,
+                                timestamp: new Date(Date.now() - 1200000).toISOString(),
+                                itemsProcessed: 12
+                            },
+                            {
+                                id: 'exec-005',
+                                workflowName: 'Data Collection',
+                                status: 'success',
+                                duration: 2.8,
+                                timestamp: new Date(Date.now() - 1500000).toISOString(),
+                                itemsProcessed: 6
+                            }
+                        ],
+                        performanceMetrics: [
+                            { time: '00:00', executions: 12, success: 11, errors: 1 },
+                            { time: '04:00', executions: 8, success: 8, errors: 0 },
+                            { time: '08:00', executions: 15, success: 14, errors: 1 },
+                            { time: '12:00', executions: 22, success: 21, errors: 1 },
+                            { time: '16:00', executions: 18, success: 17, errors: 1 },
+                            { time: '20:00', executions: 14, success: 13, errors: 1 }
+                        ]
+                    };
+                    setDashboardData(mockData);
+                } catch (error) {
+                    console.error('Error loading dashboard data:', error);
+                    showToast('Error al cargar datos del dashboard', 'error');
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            const getStatusColor = (status) => {
+                switch (status) {
+                    case 'success': return 'text-green-600 bg-green-100';
+                    case 'error': return 'text-red-600 bg-red-100';
+                    case 'running': return 'text-blue-600 bg-blue-100';
+                    default: return 'text-gray-600 bg-gray-100';
+                }
+            };
+            
+            const getStatusIcon = (status) => {
+                switch (status) {
+                    case 'success': return '✅';
+                    case 'error': return '❌';
+                    case 'running': return '🔄';
+                    default: return '⏸️';
+                }
+            };
+            
+            if (!isOpen) return null;
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl w-full max-w-7xl max-h-[95vh] overflow-hidden">
+                        <div className="flex justify-between items-center p-6 border-b">
+                            <h2 className="text-xl font-semibold">📊 Dashboard de Workflows</h2>
+                            <div className="flex items-center gap-4">
+                                <select 
+                                    value={timeRange} 
+                                    onChange={(e) => setTimeRange(e.target.value)}
+                                    className="px-3 py-1 border rounded"
+                                >
+                                    <option value="1h">Última hora</option>
+                                    <option value="24h">Últimas 24h</option>
+                                    <option value="7d">Últimos 7 días</option>
+                                    <option value="30d">Últimos 30 días</option>
+                                </select>
+                                <button 
+                                    onClick={onClose}
+                                    className="text-gray-500 hover:text-gray-700"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto max-h-[calc(95vh-120px)]">
+                            {isLoading ? (
+                                <div className="flex justify-center items-center py-12">
+                                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                                    <span className="ml-2">Cargando dashboard...</span>
+                                </div>
+                            ) : (
+                                <div className="space-y-6">
+                                    {/* Métricas principales */}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                                        <div className="bg-blue-50 p-4 rounded-lg">
+                                            <div className="text-2xl font-bold text-blue-600">{dashboardData.totalWorkflows}</div>
+                                            <div className="text-sm text-gray-600">Total Workflows</div>
+                                        </div>
+                                        <div className="bg-green-50 p-4 rounded-lg">
+                                            <div className="text-2xl font-bold text-green-600">{dashboardData.activeWorkflows}</div>
+                                            <div className="text-sm text-gray-600">Workflows Activos</div>
+                                        </div>
+                                        <div className="bg-purple-50 p-4 rounded-lg">
+                                            <div className="text-2xl font-bold text-purple-600">{dashboardData.totalExecutions}</div>
+                                            <div className="text-sm text-gray-600">Total Ejecuciones</div>
+                                        </div>
+                                        <div className="bg-yellow-50 p-4 rounded-lg">
+                                            <div className="text-2xl font-bold text-yellow-600">{dashboardData.successRate}%</div>
+                                            <div className="text-sm text-gray-600">Tasa de Éxito</div>
+                                        </div>
+                                        <div className="bg-indigo-50 p-4 rounded-lg">
+                                            <div className="text-2xl font-bold text-indigo-600">{dashboardData.avgExecutionTime}s</div>
+                                            <div className="text-sm text-gray-600">Tiempo Promedio</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                        {/* Gráfico de rendimiento */}
+                                        <div className="bg-white border rounded-lg p-4">
+                                            <h3 className="text-lg font-medium mb-4">📈 Rendimiento por Horas</h3>
+                                            <div className="space-y-2">
+                                                {dashboardData.performanceMetrics.map((metric, index) => (
+                                                    <div key={index} className="flex items-center justify-between">
+                                                        <span className="text-sm text-gray-600">{metric.time}</span>
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="w-20 bg-gray-200 rounded-full h-2">
+                                                                <div 
+                                                                    className="bg-green-500 h-2 rounded-full" 
+                                                                    style={{ width: `${(metric.success / metric.executions) * 100}%` }}
+                                                                ></div>
+                                                            </div>
+                                                            <span className="text-xs text-gray-500">{metric.executions} exec</span>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Ejecuciones recientes */}
+                                        <div className="bg-white border rounded-lg p-4">
+                                            <h3 className="text-lg font-medium mb-4">🕒 Ejecuciones Recientes</h3>
+                                            <div className="space-y-3 max-h-64 overflow-y-auto">
+                                                {dashboardData.recentExecutions.map((execution) => (
+                                                    <div key={execution.id} className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                                                        <div className="flex-1">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className={`px-2 py-1 rounded-full text-xs ${getStatusColor(execution.status)}`}>
+                                                                    {getStatusIcon(execution.status)} {execution.status.toUpperCase()}
+                                                                </span>
+                                                                <span className="font-medium">{execution.workflowName}</span>
+                                                            </div>
+                                                            <div className="text-xs text-gray-500 mt-1">
+                                                                {new Date(execution.timestamp).toLocaleString()} • 
+                                                                {execution.duration}s • 
+                                                                {execution.itemsProcessed} items
+                                                                {execution.error && (
+                                                                    <span className="text-red-500 ml-2">• {execution.error}</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Alertas y estado del sistema */}
+                                    <div className="bg-white border rounded-lg p-4">
+                                        <h3 className="text-lg font-medium mb-4">⚠️ Alertas del Sistema</h3>
+                                        <div className="space-y-2">
+                                            <div className="flex items-center gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
+                                                <span className="text-yellow-600">⚠️</span>
+                                                <div>
+                                                    <div className="font-medium text-yellow-800">Workflow con errores frecuentes</div>
+                                                    <div className="text-sm text-yellow-600">El workflow 'Notification' ha fallado 3 veces en la última hora</div>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded">
+                                                <span className="text-green-600">✅</span>
+                                                <div>
+                                                    <div className="font-medium text-green-800">Sistema funcionando correctamente</div>
+                                                    <div className="text-sm text-green-600">Todos los workflows principales están operativos</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Advanced Filters Component
+        const AdvancedFilters = ({ onFilterChange, currentFilters, isOpen, onClose }) => {
+            const [filters, setFilters] = useState({
+                dateRange: currentFilters?.dateRange || 'all',
+                amountRange: currentFilters?.amountRange || { min: 0, max: 1000000 },
+                categories: currentFilters?.categories || [],
+                regions: currentFilters?.regions || [],
+                status: currentFilters?.status || 'all',
+                relevanceScore: currentFilters?.relevanceScore || 0,
+                keywords: currentFilters?.keywords || '',
+                sortBy: currentFilters?.sortBy || 'deadline',
+                sortOrder: currentFilters?.sortOrder || 'asc'
+            });
+            
+            const [availableCategories] = useState([
+                'Digitalización', 'I+D+i', 'Sostenibilidad', 'Internacionalización',
+                'Formación', 'Empleo', 'Turismo', 'Agricultura', 'Industria',
+                'Comercio', 'Energía', 'Transporte', 'Cultura', 'Deporte'
+            ]);
+            
+            const [availableRegions] = useState([
+                'Andalucía', 'Aragón', 'Asturias', 'Baleares', 'Canarias',
+                'Cantabria', 'Castilla-La Mancha', 'Castilla y León', 'Cataluña',
+                'Extremadura', 'Galicia', 'La Rioja', 'Madrid', 'Murcia',
+                'Navarra', 'País Vasco', 'Valencia', 'Nacional', 'Europea'
+            ]);
+            
+            const handleFilterChange = (key, value) => {
+                const newFilters = { ...filters, [key]: value };
+                setFilters(newFilters);
+            };
+            
+            const handleCategoryToggle = (category) => {
+                const newCategories = filters.categories.includes(category)
+                    ? filters.categories.filter(c => c !== category)
+                    : [...filters.categories, category];
+                handleFilterChange('categories', newCategories);
+            };
+            
+            const handleRegionToggle = (region) => {
+                const newRegions = filters.regions.includes(region)
+                    ? filters.regions.filter(r => r !== region)
+                    : [...filters.regions, region];
+                handleFilterChange('regions', newRegions);
+            };
+            
+            const applyFilters = () => {
+                onFilterChange(filters);
+                onClose();
+            };
+            
+            const resetFilters = () => {
+                const defaultFilters = {
+                    dateRange: 'all',
+                    amountRange: { min: 0, max: 1000000 },
+                    categories: [],
+                    regions: [],
+                    status: 'all',
+                    relevanceScore: 0,
+                    keywords: '',
+                    sortBy: 'deadline',
+                    sortOrder: 'asc'
+                };
+                setFilters(defaultFilters);
+                onFilterChange(defaultFilters);
+            };
+            
+            if (!isOpen) return null;
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden">
+                        <div className="flex justify-between items-center p-6 border-b">
+                            <h2 className="text-xl font-semibold">🔍 Filtros Avanzados</h2>
+                            <button 
+                                onClick={onClose}
+                                className="text-gray-500 hover:text-gray-700"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto max-h-[calc(90vh-140px)]">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {/* Rango de fechas */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        📅 Rango de Fechas
+                                    </label>
+                                    <select 
+                                        value={filters.dateRange}
+                                        onChange={(e) => handleFilterChange('dateRange', e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        <option value="all">Todas las fechas</option>
+                                        <option value="next_week">Próxima semana</option>
+                                        <option value="next_month">Próximo mes</option>
+                                        <option value="next_3_months">Próximos 3 meses</option>
+                                        <option value="next_6_months">Próximos 6 meses</option>
+                                        <option value="next_year">Próximo año</option>
+                                    </select>
+                                </div>
+                                
+                                {/* Rango de montos */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        💰 Rango de Montos (€)
+                                    </label>
+                                    <div className="flex gap-2">
+                                        <input 
+                                            type="number"
+                                            placeholder="Mínimo"
+                                            value={filters.amountRange.min}
+                                            onChange={(e) => handleFilterChange('amountRange', {
+                                                ...filters.amountRange,
+                                                min: parseInt(e.target.value) || 0
+                                            })}
+                                            className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        />
+                                        <input 
+                                            type="number"
+                                            placeholder="Máximo"
+                                            value={filters.amountRange.max}
+                                            onChange={(e) => handleFilterChange('amountRange', {
+                                                ...filters.amountRange,
+                                                max: parseInt(e.target.value) || 1000000
+                                            })}
+                                            className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        />
+                                    </div>
+                                </div>
+                                
+                                {/* Estado */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        📊 Estado
+                                    </label>
+                                    <select 
+                                        value={filters.status}
+                                        onChange={(e) => handleFilterChange('status', e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        <option value="all">Todos los estados</option>
+                                        <option value="open">Abierta</option>
+                                        <option value="closing_soon">Cierra pronto</option>
+                                        <option value="closed">Cerrada</option>
+                                    </select>
+                                </div>
+                                
+                                {/* Puntuación de relevancia */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        ⭐ Puntuación mínima de relevancia: {filters.relevanceScore}%
+                                    </label>
+                                    <input 
+                                        type="range"
+                                        min="0"
+                                        max="100"
+                                        value={filters.relevanceScore}
+                                        onChange={(e) => handleFilterChange('relevanceScore', parseInt(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                                
+                                {/* Palabras clave */}
+                                <div className="md:col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        🔍 Palabras clave
+                                    </label>
+                                    <input 
+                                        type="text"
+                                        placeholder="Buscar por palabras clave..."
+                                        value={filters.keywords}
+                                        onChange={(e) => handleFilterChange('keywords', e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                </div>
+                                
+                                {/* Ordenamiento */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        📋 Ordenar por
+                                    </label>
+                                    <select 
+                                        value={filters.sortBy}
+                                        onChange={(e) => handleFilterChange('sortBy', e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        <option value="deadline">Fecha límite</option>
+                                        <option value="amount">Monto</option>
+                                        <option value="relevance">Relevancia</option>
+                                        <option value="title">Título</option>
+                                        <option value="created_date">Fecha de creación</option>
+                                    </select>
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        🔄 Orden
+                                    </label>
+                                    <select 
+                                        value={filters.sortOrder}
+                                        onChange={(e) => handleFilterChange('sortOrder', e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        <option value="asc">Ascendente</option>
+                                        <option value="desc">Descendente</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            {/* Categorías */}
+                            <div className="mt-6">
+                                <label className="block text-sm font-medium text-gray-700 mb-3">
+                                    🏷️ Categorías
+                                </label>
+                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                    {availableCategories.map(category => (
+                                        <label key={category} className="flex items-center">
+                                            <input 
+                                                type="checkbox"
+                                                checked={filters.categories.includes(category)}
+                                                onChange={() => handleCategoryToggle(category)}
+                                                className="mr-2"
+                                            />
+                                            <span className="text-sm">{category}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            {/* Regiones */}
+                            <div className="mt-6">
+                                <label className="block text-sm font-medium text-gray-700 mb-3">
+                                    🌍 Regiones
+                                </label>
+                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                    {availableRegions.map(region => (
+                                        <label key={region} className="flex items-center">
+                                            <input 
+                                                type="checkbox"
+                                                checked={filters.regions.includes(region)}
+                                                onChange={() => handleRegionToggle(region)}
+                                                className="mr-2"
+                                            />
+                                            <span className="text-sm">{region}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div className="flex justify-between items-center p-6 border-t bg-gray-50">
+                            <button 
+                                onClick={resetFilters}
+                                className="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+                            >
+                                🔄 Resetear
+                            </button>
+                            <div className="flex gap-3">
+                                <button 
+                                    onClick={onClose}
+                                    className="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+                                >
+                                    Cancelar
+                                </button>
+                                <button 
+                                    onClick={applyFilters}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                >
+                                    ✅ Aplicar Filtros
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Real-time Notifications Component
+        const NotificationCenter = ({ notifications, onDismiss, onMarkAllRead }) => {
+            const [isOpen, setIsOpen] = useState(false);
+            const unreadCount = notifications.filter(n => !n.read).length;
+            
+            const getNotificationIcon = (type) => {
+                switch(type) {
+                    case 'new_grant': return '🎯';
+                    case 'deadline_warning': return '⚠️';
+                    case 'workflow_status': return '🔄';
+                    case 'system': return '⚙️';
+                    default: return '📢';
+                }
+            };
+            
+            const getNotificationColor = (type) => {
+                switch(type) {
+                    case 'new_grant': return 'bg-green-50 border-green-200';
+                    case 'deadline_warning': return 'bg-yellow-50 border-yellow-200';
+                    case 'workflow_status': return 'bg-blue-50 border-blue-200';
+                    case 'system': return 'bg-gray-50 border-gray-200';
+                    default: return 'bg-gray-50 border-gray-200';
+                }
+            };
+            
+            const formatTime = (timestamp) => {
+                const now = new Date();
+                const notificationTime = new Date(timestamp);
+                const diffInMinutes = Math.floor((now - notificationTime) / (1000 * 60));
+                
+                if (diffInMinutes < 1) return 'Ahora';
+                if (diffInMinutes < 60) return `${diffInMinutes}m`;
+                if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h`;
+                return `${Math.floor(diffInMinutes / 1440)}d`;
+            };
+            
+            return (
+                <div className="relative">
+                    {/* Notification Bell */}
+                    <button 
+                        onClick={() => setIsOpen(!isOpen)}
+                        className="relative p-2 text-gray-600 hover:text-blue-600 transition-colors"
+                    >
+                        🔔
+                        {unreadCount > 0 && (
+                            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+                                {unreadCount > 9 ? '9+' : unreadCount}
+                            </span>
+                        )}
+                    </button>
+                    
+                    {/* Notification Dropdown */}
+                    {isOpen && (
+                        <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl border z-50 max-h-96 overflow-hidden">
+                            <div className="flex justify-between items-center p-4 border-b">
+                                <h3 className="font-semibold text-gray-900">Notificaciones</h3>
+                                <div className="flex gap-2">
+                                    {unreadCount > 0 && (
+                                        <button 
+                                            onClick={onMarkAllRead}
+                                            className="text-xs text-blue-600 hover:text-blue-800"
+                                        >
+                                            Marcar todas como leídas
+                                        </button>
+                                    )}
+                                    <button 
+                                        onClick={() => setIsOpen(false)}
+                                        className="text-gray-500 hover:text-gray-700"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div className="max-h-80 overflow-y-auto">
+                                {notifications.length === 0 ? (
+                                    <div className="p-4 text-center text-gray-500">
+                                        No hay notificaciones
+                                    </div>
+                                ) : (
+                                    notifications.map(notification => (
+                                        <div 
+                                            key={notification.id}
+                                            className={`p-3 border-b last:border-b-0 ${getNotificationColor(notification.type)} ${
+                                                !notification.read ? 'border-l-4 border-l-blue-500' : ''
+                                            }`}
+                                        >
+                                            <div className="flex justify-between items-start">
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className="text-lg">{getNotificationIcon(notification.type)}</span>
+                                                        <span className="font-medium text-sm text-gray-900">
+                                                            {notification.title}
+                                                        </span>
+                                                        <span className="text-xs text-gray-500">
+                                                            {formatTime(notification.timestamp)}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-sm text-gray-700 mb-2">
+                                                        {notification.message}
+                                                    </p>
+                                                    {notification.action && (
+                                                        <button 
+                                                            onClick={notification.action.handler}
+                                                            className="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
+                                                        >
+                                                            {notification.action.label}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <button 
+                                                    onClick={() => onDismiss(notification.id)}
+                                                    className="text-gray-400 hover:text-gray-600 ml-2"
+                                                >
+                                                    ✕
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+        
+        // Workflow Control Panel Component
+        const WorkflowControlPanel = ({ isOpen, onClose, showToast }) => {
+            const [workflows, setWorkflows] = useState([]);
+            const [isLoading, setIsLoading] = useState(false);
+            const [selectedWorkflow, setSelectedWorkflow] = useState(null);
+            
+            useEffect(() => {
+                if (isOpen) {
+                    loadWorkflows();
+                }
+            }, [isOpen]);
+            
+            const loadWorkflows = async () => {
+                setIsLoading(true);
+                try {
+                    const workflowList = await n8nService.getWorkflows();
+                    // Simulate workflow data with status
+                    const mockWorkflows = [
+                        {
+                            id: 'grant-evaluation-workflow',
+                            name: 'Grant Evaluation Workflow',
+                            active: true,
+                            lastExecution: new Date().toISOString(),
+                            status: 'running',
+                            description: 'Workflow principal para evaluar subvenciones'
+                        },
+                        {
+                            id: 'data-collection-workflow',
+                            name: 'Data Collection Workflow',
+                            active: false,
+                            lastExecution: new Date(Date.now() - 86400000).toISOString(),
+                            status: 'paused',
+                            description: 'Workflow para recopilar datos de fuentes externas'
+                        },
+                        {
+                            id: 'notification-workflow',
+                            name: 'Notification Workflow',
+                            active: true,
+                            lastExecution: new Date(Date.now() - 3600000).toISOString(),
+                            status: 'running',
+                            description: 'Workflow para enviar notificaciones'
+                        }
+                    ];
+                    setWorkflows(mockWorkflows);
+                } catch (error) {
+                    console.error('Error loading workflows:', error);
+                    showToast('Error al cargar workflows', 'error');
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            const handlePauseWorkflow = async (workflowId) => {
+                try {
+                    await n8nService.pauseWorkflow(workflowId);
+                    setWorkflows(prev => prev.map(w => 
+                        w.id === workflowId ? { ...w, active: false, status: 'paused' } : w
+                    ));
+                    showToast('Workflow pausado correctamente', 'success');
+                } catch (error) {
+                    console.error('Error pausing workflow:', error);
+                    showToast('Error al pausar workflow', 'error');
+                }
+            };
+            
+            const handleResumeWorkflow = async (workflowId) => {
+                try {
+                    await n8nService.resumeWorkflow(workflowId);
+                    setWorkflows(prev => prev.map(w => 
+                        w.id === workflowId ? { ...w, active: true, status: 'running' } : w
+                    ));
+                    showToast('Workflow reanudado correctamente', 'success');
+                } catch (error) {
+                    console.error('Error resuming workflow:', error);
+                    showToast('Error al reanudar workflow', 'error');
+                }
+            };
+            
+            const getStatusColor = (status) => {
+                switch (status) {
+                    case 'running': return 'text-green-600 bg-green-100';
+                    case 'paused': return 'text-yellow-600 bg-yellow-100';
+                    case 'error': return 'text-red-600 bg-red-100';
+                    default: return 'text-gray-600 bg-gray-100';
+                }
+            };
+            
+            const getStatusIcon = (status) => {
+                switch (status) {
+                    case 'running': return '▶️';
+                    case 'paused': return '⏸️';
+                    case 'error': return '❌';
+                    default: return '⏹️';
+                }
+            };
+            
+            if (!isOpen) return null;
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden">
+                        <div className="flex justify-between items-center p-6 border-b">
+                            <h2 className="text-xl font-semibold">🔧 Control de Workflows</h2>
+                            <button 
+                                onClick={onClose}
+                                className="text-gray-500 hover:text-gray-700"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
+                            {isLoading ? (
+                                <div className="flex justify-center items-center py-12">
+                                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                                    <span className="ml-2">Cargando workflows...</span>
+                                </div>
+                            ) : (
+                                <div className="space-y-4">
+                                    <div className="flex justify-between items-center mb-6">
+                                        <h3 className="text-lg font-medium">Workflows Disponibles</h3>
+                                        <button 
+                                            onClick={loadWorkflows}
+                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                        >
+                                            🔄 Actualizar
+                                        </button>
+                                    </div>
+                                    
+                                    <div className="grid gap-4">
+                                        {workflows.map(workflow => (
+                                            <div key={workflow.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                                                <div className="flex justify-between items-start">
+                                                    <div className="flex-1">
+                                                        <div className="flex items-center gap-3 mb-2">
+                                                            <h4 className="font-medium text-lg">{workflow.name}</h4>
+                                                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(workflow.status)}`}>
+                                                                {getStatusIcon(workflow.status)} {workflow.status.toUpperCase()}
+                                                            </span>
+                                                        </div>
+                                                        <p className="text-gray-600 text-sm mb-3">{workflow.description}</p>
+                                                        <div className="text-xs text-gray-500">
+                                                            <span>ID: {workflow.id}</span>
+                                                            <span className="ml-4">Última ejecución: {new Date(workflow.lastExecution).toLocaleString()}</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex gap-2 ml-4">
+                                                        {workflow.active ? (
+                                                            <button 
+                                                                onClick={() => handlePauseWorkflow(workflow.id)}
+                                                                className="px-3 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 text-sm"
+                                                            >
+                                                                ⏸️ Pausar
+                                                            </button>
+                                                        ) : (
+                                                            <button 
+                                                                onClick={() => handleResumeWorkflow(workflow.id)}
+                                                                className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+                                                            >
+                                                                ▶️ Reanudar
+                                                            </button>
+                                                        )}
+                                                        <button 
+                                                            onClick={() => setSelectedWorkflow(workflow)}
+                                                            className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+                                                        >
+                                                            📊 Detalles
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    
+                                    {workflows.length === 0 && (
+                                        <div className="text-center py-12">
+                                            <div className="text-6xl mb-4">🔧</div>
+                                            <h3 className="text-xl font-semibold mb-2">No hay workflows disponibles</h3>
+                                            <p className="text-gray-600">Verifica la conexión con n8n</p>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // AI Prompt Control Panel Component
+        const AIPromptPanel = ({ isOpen, onClose }) => {
+            const [currentPrompt, setCurrentPrompt] = useState('');
+            const [promptTemplates, setPromptTemplates] = useState([
+                {
+                    id: 'default',
+                    name: 'Evaluación Estándar',
+                    prompt: 'Evalúa la relevancia de esta subvención para una empresa tecnológica considerando: 1) Alineación con objetivos, 2) Viabilidad técnica, 3) Impacto potencial, 4) Requisitos de elegibilidad. Proporciona una puntuación del 0 al 1.'
+                },
+                {
+                    id: 'startup',
+                    name: 'Enfoque Startup',
+                    prompt: 'Analiza esta subvención desde la perspectiva de una startup tecnológica: 1) Facilidad de aplicación, 2) Tiempo de respuesta, 3) Cuantía vs esfuerzo, 4) Compatibilidad con modelo de negocio escalable. Puntuación 0-1.'
+                },
+                {
+                    id: 'research',
+                    name: 'I+D+i Intensivo',
+                    prompt: 'Evalúa esta subvención para proyectos de I+D+i: 1) Nivel de innovación requerido, 2) Colaboración con centros de investigación, 3) Transferencia tecnológica, 4) Publicaciones y patentes. Puntuación 0-1.'
+                }
+            ]);
+            const [selectedTemplate, setSelectedTemplate] = useState('default');
+            const [isLoading, setIsLoading] = useState(false);
+            const [customPrompt, setCustomPrompt] = useState('');
+            const [promptHistory, setPromptHistory] = useState([]);
+            
+            useEffect(() => {
+                if (isOpen) {
+                    // Load current prompt from n8n workflow
+                    loadCurrentPrompt();
+                }
+            }, [isOpen]);
+            
+            const loadCurrentPrompt = async () => {
+                try {
+                    // This would fetch the current prompt from n8n workflow
+                    const response = await n8nService.getWorkflowConfig();
+                    if (response.aiPrompt) {
+                        setCurrentPrompt(response.aiPrompt);
+                    }
+                } catch (error) {
+                    console.error('Error loading current prompt:', error);
+                }
+            };
+            
+            const updatePrompt = async (newPrompt) => {
+                setIsLoading(true);
+                try {
+                    // Update the prompt in n8n workflow
+                    await n8nService.updateWorkflowPrompt(newPrompt);
+                    setCurrentPrompt(newPrompt);
+                    
+                    // Add to history
+                    const historyEntry = {
+                        id: Date.now(),
+                        prompt: newPrompt,
+                        timestamp: new Date(),
+                        template: selectedTemplate
+                    };
+                    setPromptHistory(prev => [historyEntry, ...prev.slice(0, 9)]); // Keep last 10
+                    
+                    showToast('Prompt actualizado correctamente', 'success');
+                } catch (error) {
+                    console.error('Error updating prompt:', error);
+                    showToast('Error al actualizar el prompt', 'error');
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            const handleTemplateSelect = (templateId) => {
+                setSelectedTemplate(templateId);
+                const template = promptTemplates.find(t => t.id === templateId);
+                if (template) {
+                    setCustomPrompt(template.prompt);
+                }
+            };
+            
+            const testPrompt = async (prompt) => {
+                setIsLoading(true);
+                try {
+                    // Test the prompt with a sample grant
+                    const testResult = await n8nService.testPrompt(prompt);
+                    showToast(`Prueba completada. Puntuación: ${testResult.score}`, 'success');
+                } catch (error) {
+                    console.error('Error testing prompt:', error);
+                    showToast('Error al probar el prompt', 'error');
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            if (!isOpen) return null;
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold text-gray-800">🤖 Control de Prompts de IA</h2>
+                            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-2xl">
+                                ×
+                            </button>
+                        </div>
+                        
+                        {/* Current Prompt Display */}
+                        <div className="mb-6">
+                            <h3 className="text-lg font-semibold mb-3">Prompt Actual</h3>
+                            <div className="bg-gray-50 p-4 rounded-lg border">
+                                <p className="text-sm text-gray-700">
+                                    {currentPrompt || 'No hay prompt configurado'}
+                                </p>
+                            </div>
+                        </div>
+                        
+                        {/* Template Selection */}
+                        <div className="mb-6">
+                            <h3 className="text-lg font-semibold mb-3">Plantillas de Prompt</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                {promptTemplates.map(template => (
+                                    <div 
+                                        key={template.id}
+                                        className={`p-4 border rounded-lg cursor-pointer transition-colors ${
+                                            selectedTemplate === template.id 
+                                                ? 'border-blue-500 bg-blue-50' 
+                                                : 'border-gray-300 hover:border-gray-400'
+                                        }`}
+                                        onClick={() => handleTemplateSelect(template.id)}
+                                    >
+                                        <h4 className="font-medium text-gray-800">{template.name}</h4>
+                                        <p className="text-xs text-gray-600 mt-1 line-clamp-3">
+                                            {template.prompt.substring(0, 100)}...
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        
+                        {/* Custom Prompt Editor */}
+                        <div className="mb-6">
+                            <h3 className="text-lg font-semibold mb-3">Editor de Prompt</h3>
+                            <textarea
+                                value={customPrompt}
+                                onChange={(e) => setCustomPrompt(e.target.value)}
+                                placeholder="Escribe tu prompt personalizado aquí..."
+                                className="w-full h-32 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                            />
+                            <div className="flex space-x-4 mt-4">
+                                <button
+                                    onClick={() => updatePrompt(customPrompt)}
+                                    disabled={isLoading || !customPrompt.trim()}
+                                    className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isLoading ? '🔄 Actualizando...' : '💾 Actualizar Prompt'}
+                                </button>
+                                <button
+                                    onClick={() => testPrompt(customPrompt)}
+                                    disabled={isLoading || !customPrompt.trim()}
+                                    className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isLoading ? '🔄 Probando...' : '🧪 Probar Prompt'}
+                                </button>
+                                <button
+                                    onClick={() => setCustomPrompt('')}
+                                    className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700"
+                                >
+                                    🗑️ Limpiar
+                                </button>
+                            </div>
+                        </div>
+                        
+                        {/* Prompt History */}
+                        {promptHistory.length > 0 && (
+                            <div className="mb-6">
+                                <h3 className="text-lg font-semibold mb-3">Historial de Prompts</h3>
+                                <div className="max-h-40 overflow-y-auto">
+                                    {promptHistory.map(entry => (
+                                        <div key={entry.id} className="border-b border-gray-200 py-2">
+                                            <div className="flex justify-between items-start">
+                                                <div className="flex-1">
+                                                    <p className="text-sm text-gray-700 line-clamp-2">
+                                                        {entry.prompt.substring(0, 150)}...
+                                                    </p>
+                                                    <p className="text-xs text-gray-500 mt-1">
+                                                        {entry.timestamp.toLocaleString()} - {entry.template}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    onClick={() => setCustomPrompt(entry.prompt)}
+                                                    className="text-blue-600 hover:text-blue-800 text-sm ml-2"
+                                                >
+                                                    Usar
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // Configuración de Supabase (se actualizará con las variables de entorno)
+        const SUPABASE_CONFIG = {
+            get url() { return ENV_CONFIG.SUPABASE_URL; },
+            get anonKey() { return ENV_CONFIG.SUPABASE_ANON_KEY; },
+            get tableName() { return ENV_CONFIG.SUPABASE_TABLE_NAME; }
+        };
+
+        // Servicios para n8n y Supabase
+        const n8nService = {
+            async triggerWorkflow(searchParams) {
+                try {
+                    const response = await fetch(N8N_CONFIG.webhookUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            searchTerms: searchParams.terms,
+                            dateRange: searchParams.dateRange,
+                            categories: searchParams.categories,
+                            minAmount: searchParams.minAmount,
+                            maxAmount: searchParams.maxAmount
+                        })
+                    });
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error triggering n8n workflow:', error);
+                    throw error;
+                }
+            },
+            
+            async getWorkflowStatus(workflowId) {
+                try {
+                    const response = await fetch(`${N8N_CONFIG.baseUrl}/api/v1/executions/${workflowId}`, {
+                        headers: {
+                            'X-N8N-API-KEY': N8N_CONFIG.apiKey
+                        }
+                    });
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error getting workflow status:', error);
+                    throw error;
+                }
+            },
+            
+            async getWorkflowConfig() {
+                try {
+                    // Simulate getting workflow configuration including AI prompt
+                    return {
+                        aiPrompt: 'Evalúa la relevancia de esta subvención para una empresa tecnológica considerando: 1) Alineación con objetivos, 2) Viabilidad técnica, 3) Impacto potencial, 4) Requisitos de elegibilidad. Proporciona una puntuación del 0 al 1.',
+                        workflowId: 'grant-evaluation-workflow'
+                    };
+                } catch (error) {
+                    console.error('Error fetching workflow config:', error);
+                    throw error;
+                }
+            },
+            
+            async updateWorkflowPrompt(newPrompt) {
+                try {
+                    // Simulate updating the AI prompt in the workflow
+                    const response = await fetch(`${N8N_CONFIG.baseUrl}/workflows/grant-evaluation-workflow`, {
+                        method: 'PUT',
+                        headers: {
+                            'Authorization': `Bearer ${N8N_CONFIG.apiKey}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            nodes: [
+                                {
+                                    id: 'ai-evaluation-node',
+                                    type: 'openai',
+                                    parameters: {
+                                        prompt: newPrompt
+                                    }
+                                }
+                            ]
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error updating workflow prompt:', error);
+                    throw error;
+                }
+            },
+            
+            async testPrompt(prompt) {
+                try {
+                    // Simulate testing the prompt with a sample grant
+                    const sampleGrant = {
+                        title: 'Subvención para Digitalización de PYMES',
+                        description: 'Ayuda para la transformación digital de pequeñas y medianas empresas',
+                        amount_max: 50000,
+                        deadline: '2024-12-31'
+                    };
+                    
+                    // Simulate AI evaluation
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    return {
+                        score: Math.random() * 0.4 + 0.6, // Random score between 0.6 and 1.0
+                        reasoning: 'Evaluación de prueba completada'
+                    };
+                } catch (error) {
+                    console.error('Error testing prompt:', error);
+                    throw error;
+                }
+            },
+            
+            async pauseWorkflow(workflowId) {
+                try {
+                    const response = await fetch(`${N8N_CONFIG.baseUrl}/workflows/${workflowId}/deactivate`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${N8N_CONFIG.apiKey}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error pausing workflow:', error);
+                    throw error;
+                }
+            },
+            
+            async resumeWorkflow(workflowId) {
+                try {
+                    const response = await fetch(`${N8N_CONFIG.baseUrl}/workflows/${workflowId}/activate`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${N8N_CONFIG.apiKey}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error resuming workflow:', error);
+                    throw error;
+                }
+            },
+            
+            async getWorkflows() {
+                try {
+                    const response = await fetch(`${N8N_CONFIG.baseUrl}/workflows`, {
+                        headers: {
+                            'Authorization': `Bearer ${N8N_CONFIG.apiKey}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error fetching workflows:', error);
+                    throw error;
+                }
+            }
+        };
+
+        const supabaseService = {
+            async getGrants(filters = {}) {
+                try {
+                    let query = `${SUPABASE_CONFIG.url}/rest/v1/${SUPABASE_CONFIG.tableName}?select=*`;
+                    
+                    // Aplicar filtros si existen
+                    if (filters.sectors && filters.sectors.length > 0) {
+                        query += `&sectors=cs.{${filters.sectors.join(',')}}`;
+                    }
+                    if (filters.locations && filters.locations.length > 0) {
+                        query += `&location=cs.{${filters.locations.join(',')}}`;
+                    }
+                    if (filters.amount_range) {
+                        query += `&amount_min=gte.${filters.amount_range.min}&amount_max=lte.${filters.amount_range.max}`;
+                    }
+                    if (filters.urgency_levels && filters.urgency_levels.length > 0) {
+                        query += `&urgency_level=in.(${filters.urgency_levels.join(',')})`;
+                    }
+                    
+                    const response = await fetch(query, {
+                        headers: {
+                            'apikey': SUPABASE_CONFIG.anonKey,
+                            'Authorization': `Bearer ${SUPABASE_CONFIG.anonKey}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    const grants = await response.json();
+                    return grants.length > 0 ? grants : mockGrants; // Fallback a mock data si no hay datos
+                } catch (error) {
+                    console.error('Error fetching grants from Supabase:', error);
+                    return mockGrants; // Fallback a mock data en caso de error
+                }
+            },
+            
+            async insertGrant(grantData) {
+                try {
+                    const response = await fetch(`${SUPABASE_CONFIG.url}/rest/v1/${SUPABASE_CONFIG.tableName}`, {
+                        method: 'POST',
+                        headers: {
+                            'apikey': SUPABASE_CONFIG.anonKey,
+                            'Authorization': `Bearer ${SUPABASE_CONFIG.anonKey}`,
+                            'Content-Type': 'application/json',
+                            'Prefer': 'return=representation'
+                        },
+                        body: JSON.stringify(grantData)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error inserting grant to Supabase:', error);
+                    throw error;
+                }
+            },
+            
+            async subscribeToChanges(callback) {
+                // Simulación de suscripción en tiempo real
+                // En un entorno real, usarías WebSockets o Server-Sent Events
+                console.log('Subscribing to real-time changes');
+                
+                // Polling cada 30 segundos como alternativa
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const latestGrants = await this.getGrants();
+                        callback(latestGrants);
+                    } catch (error) {
+                        console.error('Error polling for changes:', error);
+                    }
+                }, 30000);
+                
+                return () => clearInterval(pollInterval);
+            }
+        };
+        
+        // Mock Data (se reemplazará con datos de Supabase)
+        const mockGrants = [
+            {
+                id: "1",
+                source: "BOE_nacional",
+                title: "PROGRAMA KIT DIGITAL 2024 - DIGITALIZACIÓN PYME",
+                summary: "Ayudas para la digitalización de pequeñas y medianas empresas mediante soluciones tecnológicas",
+                description: "Programa destinado a la digitalización de PYMES mediante la implementación de soluciones digitales que mejoren la competitividad empresarial.",
+                amount_min: 12000,
+                amount_max: 25000,
+                currency: "EUR",
+                deadline: "2024-03-15",
+                published_date: "2024-01-15",
+                location: ["España"],
+                sectors: ["Digitalización", "PYME", "Tecnología"],
+                company_types: ["pyme"],
+                requirements: ["Empresa con menos de 50 empleados", "Facturación anual inferior a 10M€"],
+                relevance_score: 0.95,
+                urgency_level: "high",
+                tags: ["Digital", "PYME", "Subvención"]
+            },
+            {
+                id: "2",
+                source: "europa",
+                title: "AYUDAS I+D+I CDTI - INVESTIGACIÓN APLICADA",
+                summary: "Financiación para proyectos de investigación y desarrollo tecnológico en empresas innovadoras",
+                description: "Programa europeo para el fomento de la investigación aplicada y el desarrollo tecnológico en sectores estratégicos.",
+                amount_min: 175000,
+                amount_max: 500000,
+                currency: "EUR",
+                deadline: "2024-04-30",
+                published_date: "2024-01-20",
+                location: ["UE", "España"],
+                sectors: ["I+D", "Innovación", "Tecnología"],
+                company_types: ["pyme", "startup"],
+                requirements: ["Proyecto de I+D+I", "Presupuesto mínimo 200K€"],
+                relevance_score: 0.88,
+                urgency_level: "medium",
+                tags: ["I+D", "Europa", "Innovación"]
+            },
+            {
+                id: "3",
+                source: "BOE_andalucia",
+                title: "PROGRAMA STARTUP ANDALUCÍA 2024",
+                summary: "Apoyo financiero para startups tecnológicas en fase de crecimiento en Andalucía",
+                description: "Programa regional para impulsar el ecosistema startup andaluz con financiación y mentoring.",
+                amount_min: 25000,
+                amount_max: 75000,
+                currency: "EUR",
+                deadline: "2024-02-28",
+                published_date: "2024-01-10",
+                location: ["Andalucía"],
+                sectors: ["Startup", "Tecnología", "Innovación"],
+                company_types: ["startup"],
+                requirements: ["Empresa constituida hace menos de 3 años", "Sede en Andalucía"],
+                relevance_score: 0.92,
+                urgency_level: "critical",
+                tags: ["Startup", "Andalucía", "Tecnología"]
+            },
+            {
+                id: "4",
+                source: "BOE_nacional",
+                title: "AYUDAS INTELIGENCIA ARTIFICIAL SANITARIA",
+                summary: "Financiación para proyectos de IA aplicada al sector salud y biotecnología",
+                description: "Programa específico para el desarrollo de soluciones de inteligencia artificial en el ámbito sanitario.",
+                amount_min: 50000,
+                amount_max: 150000,
+                currency: "EUR",
+                deadline: "2024-03-20",
+                published_date: "2024-01-25",
+                location: ["España"],
+                sectors: ["IA", "Salud", "Biotecnología"],
+                company_types: ["startup", "pyme"],
+                requirements: ["Proyecto relacionado con IA en salud", "Equipo técnico especializado"],
+                relevance_score: 0.97,
+                urgency_level: "high",
+                tags: ["IA", "Salud", "Innovación"]
+            },
+            {
+                id: "5",
+                source: "europa",
+                title: "GREEN DEAL EUROPEO - ENERGÍAS RENOVABLES",
+                summary: "Financiación para proyectos de energías renovables y sostenibilidad ambiental",
+                description: "Programa del Green Deal europeo para impulsar la transición energética y la sostenibilidad.",
+                amount_min: 100000,
+                amount_max: 1000000,
+                currency: "EUR",
+                deadline: "2024-05-15",
+                published_date: "2024-02-01",
+                location: ["UE"],
+                sectors: ["Energía", "Sostenibilidad", "Medio Ambiente"],
+                company_types: ["pyme", "gran_empresa"],
+                requirements: ["Proyecto de energías renovables", "Impacto ambiental positivo"],
+                relevance_score: 0.75,
+                urgency_level: "low",
+                tags: ["Green Deal", "Energía", "UE"]
+            }
+        ];
+        
+        // Toast Component
+        const Toast = ({ message, type, onClose }) => {
+            useEffect(() => {
+                const timer = setTimeout(onClose, 3000);
+                return () => clearTimeout(timer);
+            }, [onClose]);
+            
+            const bgColor = type === 'success' ? 'bg-green-500' : type === 'error' ? 'bg-red-500' : 'bg-blue-500';
+            
+            return (
+                <div className={`fixed top-4 right-4 ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg toast z-50`}>
+                    <div className="flex items-center justify-between">
+                        <span>{message}</span>
+                        <button onClick={onClose} className="ml-4 text-white hover:text-gray-200">
+                            ×
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Header Component
+        const Header = ({ onSearch, searchQuery, setSearchQuery, onOpenN8NConfig, onOpenSupabaseData, onOpenAIPrompt, onOpenWorkflowControl, onOpenWorkflowDashboard, onOpenAdvancedFilters, notifications, onDismissNotification, onMarkAllNotificationsRead }) => {
+            return (
+                <header className="bg-white shadow-sm border-b sticky top-0 z-40">
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div className="flex justify-between items-center h-16">
+                            <div className="flex items-center">
+                                <h1 className="text-2xl font-bold text-blue-600">🏛️ SubvencionesAI</h1>
+                            </div>
+                            <div className="flex-1 max-w-lg mx-8">
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        placeholder="🔍 Buscar subvenciones..."
+                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        onKeyPress={(e) => e.key === 'Enter' && onSearch()}
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex items-center space-x-4">
+                                <button 
+                                    onClick={onOpenN8NConfig}
+                                    className="px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                >
+                                    🔧 n8n Config
+                                </button>
+                                <button 
+                                    onClick={onOpenSupabaseData}
+                                    className="px-3 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                                >
+                                    📊 Supabase Data
+                                </button>
+                                <button 
+                                    onClick={onOpenAIPrompt}
+                                    className="px-3 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                                >
+                                    🤖 AI Prompts
+                                </button>
+                                <button 
+                                    onClick={onOpenWorkflowControl}
+                                    className="px-3 py-2 text-sm bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
+                                >
+                                    🔧 Workflows
+                                </button>
+                                <button 
+                                    onClick={onOpenWorkflowDashboard}
+                                    className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                                >
+                                    📊 Dashboard
+                                </button>
+                                <button 
+                                    onClick={onOpenAdvancedFilters}
+                                    className="px-3 py-2 text-sm bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
+                                >
+                                    🔍 Filtros
+                                </button>
+                                <NotificationCenter 
+                                    notifications={notifications}
+                                    onDismiss={onDismissNotification}
+                                    onMarkAllRead={onMarkAllNotificationsRead}
+                                />
+                                <button className="p-2 text-gray-600 hover:text-blue-600">
+                                    👤 Perfil
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex space-x-6 pb-4">
+                            <button className="text-blue-600 border-b-2 border-blue-600 pb-2">📊 Dashboard</button>
+                            <button className="text-gray-600 hover:text-blue-600 pb-2">🎯 Alertas</button>
+                            <button className="text-gray-600 hover:text-blue-600 pb-2">📈 Analytics</button>
+                            <button className="text-gray-600 hover:text-blue-600 pb-2">⚙️ Config</button>
+                        </div>
+                    </div>
+                </header>
+            );
+        };
+        
+        // N8N Configuration Component
+        const N8NConfigPanel = ({ isOpen, onClose, onTriggerWorkflow }) => {
+            const [searchParams, setSearchParams] = useState({
+                terms: '',
+                dateRange: 'last_week',
+                categories: [],
+                minAmount: 0,
+                maxAmount: 1000000
+            });
+            const [isLoading, setIsLoading] = useState(false);
+            const [workflowStatus, setWorkflowStatus] = useState(null);
+            
+            const handleTriggerWorkflow = async () => {
+                setIsLoading(true);
+                try {
+                    const result = await n8nService.triggerWorkflow(searchParams);
+                    setWorkflowStatus('triggered');
+                    onTriggerWorkflow(result);
+                } catch (error) {
+                    setWorkflowStatus('error');
+                    console.error('Error:', error);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            if (!isOpen) return null;
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold text-gray-800">⚙️ Configuración de Búsqueda n8n</h2>
+                            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-2xl">
+                                ×
+                            </button>
+                        </div>
+                        
+                        <div className="space-y-6">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    🔍 Términos de búsqueda
+                                </label>
+                                <input
+                                    type="text"
+                                    value={searchParams.terms}
+                                    onChange={(e) => setSearchParams({...searchParams, terms: e.target.value})}
+                                    placeholder="ej: inteligencia artificial, digitalización, I+D"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                />
+                            </div>
+                            
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    📅 Rango de fechas
+                                </label>
+                                <select
+                                    value={searchParams.dateRange}
+                                    onChange={(e) => setSearchParams({...searchParams, dateRange: e.target.value})}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                >
+                                    <option value="today">Hoy</option>
+                                    <option value="last_week">Última semana</option>
+                                    <option value="last_month">Último mes</option>
+                                    <option value="last_3_months">Últimos 3 meses</option>
+                                </select>
+                            </div>
+                            
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    💰 Rango de cuantía (€)
+                                </label>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <input
+                                        type="number"
+                                        value={searchParams.minAmount}
+                                        onChange={(e) => setSearchParams({...searchParams, minAmount: parseInt(e.target.value) || 0})}
+                                        placeholder="Mínimo"
+                                        className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                    />
+                                    <input
+                                        type="number"
+                                        value={searchParams.maxAmount}
+                                        onChange={(e) => setSearchParams({...searchParams, maxAmount: parseInt(e.target.value) || 1000000})}
+                                        placeholder="Máximo"
+                                        className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                    />
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    🏷️ Categorías
+                                </label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {['Tecnología', 'I+D', 'Digitalización', 'Sostenibilidad', 'Salud', 'Educación'].map(category => (
+                                        <label key={category} className="flex items-center">
+                                            <input
+                                                type="checkbox"
+                                                checked={searchParams.categories.includes(category)}
+                                                onChange={(e) => {
+                                                    const newCategories = e.target.checked
+                                                        ? [...searchParams.categories, category]
+                                                        : searchParams.categories.filter(c => c !== category);
+                                                    setSearchParams({...searchParams, categories: newCategories});
+                                                }}
+                                                className="mr-2"
+                                            />
+                                            <span className="text-sm">{category}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            {workflowStatus && (
+                                <div className={`p-3 rounded-lg ${
+                                    workflowStatus === 'triggered' ? 'bg-green-100 text-green-800' :
+                                    workflowStatus === 'error' ? 'bg-red-100 text-red-800' :
+                                    'bg-blue-100 text-blue-800'
+                                }`}>
+                                    {workflowStatus === 'triggered' && '✅ Workflow ejecutado correctamente'}
+                                    {workflowStatus === 'error' && '❌ Error al ejecutar el workflow'}
+                                </div>
+                            )}
+                            
+                            <div className="flex space-x-4">
+                                <button
+                                    onClick={handleTriggerWorkflow}
+                                    disabled={isLoading}
+                                    className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isLoading ? '🔄 Ejecutando...' : '🚀 Ejecutar Búsqueda'}
+                                </button>
+                                <button
+                                    onClick={onClose}
+                                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                                >
+                                    Cancelar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Supabase Data Display Component
+        const SupabaseDataPanel = ({ isOpen, onClose }) => {
+            const [supabaseData, setSupabaseData] = useState([]);
+            const [isLoading, setIsLoading] = useState(false);
+            const [lastSync, setLastSync] = useState(null);
+            const [autoSync, setAutoSync] = useState(false);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [sortBy, setSortBy] = useState('created_at');
+            const [sortOrder, setSortOrder] = useState('desc');
+            const [filterBy, setFilterBy] = useState('all');
+            
+            const fetchSupabaseData = async () => {
+                setIsLoading(true);
+                try {
+                    const data = await supabaseService.getGrants();
+                    setSupabaseData(data);
+                    setLastSync(new Date());
+                } catch (error) {
+                    console.error('Error fetching Supabase data:', error);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            // Auto-sync functionality
+            useEffect(() => {
+                let interval;
+                if (isOpen && autoSync) {
+                    interval = setInterval(fetchSupabaseData, 30000); // Sync every 30 seconds
+                }
+                return () => {
+                    if (interval) clearInterval(interval);
+                };
+            }, [isOpen, autoSync]);
+            
+            useEffect(() => {
+                if (isOpen) {
+                    fetchSupabaseData();
+                }
+            }, [isOpen]);
+            
+            // Filter and sort data
+            const filteredAndSortedData = useMemo(() => {
+                let filtered = supabaseData;
+                
+                // Apply search filter
+                if (searchTerm) {
+                    filtered = filtered.filter(grant => 
+                        grant.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        grant.source?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        grant.description?.toLowerCase().includes(searchTerm.toLowerCase())
+                    );
+                }
+                
+                // Apply relevance filter
+                if (filterBy !== 'all') {
+                    switch (filterBy) {
+                        case 'high':
+                            filtered = filtered.filter(grant => grant.relevance_score > 0.8);
+                            break;
+                        case 'medium':
+                            filtered = filtered.filter(grant => grant.relevance_score > 0.6 && grant.relevance_score <= 0.8);
+                            break;
+                        case 'low':
+                            filtered = filtered.filter(grant => grant.relevance_score <= 0.6);
+                            break;
+                        case 'urgent':
+                            filtered = filtered.filter(grant => grant.urgency_level === 'critical' || grant.urgency_level === 'high');
+                            break;
+                    }
+                }
+                
+                // Apply sorting
+                filtered.sort((a, b) => {
+                    let aValue = a[sortBy];
+                    let bValue = b[sortBy];
+                    
+                    if (sortBy === 'amount_max') {
+                        aValue = aValue || 0;
+                        bValue = bValue || 0;
+                    }
+                    
+                    if (sortOrder === 'asc') {
+                        return aValue > bValue ? 1 : -1;
+                    } else {
+                        return aValue < bValue ? 1 : -1;
+                    }
+                });
+                
+                return filtered;
+            }, [supabaseData, searchTerm, sortBy, sortOrder, filterBy]);
+            
+            if (!isOpen) return null;
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+                        <div className="flex justify-between items-center mb-6">
+                            <div>
+                                <h2 className="text-2xl font-bold text-gray-800">🗄️ Datos de Supabase</h2>
+                                {lastSync && (
+                                    <p className="text-sm text-gray-600">
+                                        Última sincronización: {lastSync.toLocaleString()}
+                                    </p>
+                                )}
+                            </div>
+                            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-2xl">
+                                ×
+                            </button>
+                        </div>
+                        
+                        {/* Search and Filter Controls */}
+                        <div className="mb-6 space-y-4">
+                            <div className="flex flex-wrap gap-4">
+                                <div className="flex-1 min-w-64">
+                                    <input
+                                        type="text"
+                                        placeholder="🔍 Buscar por título, fuente o descripción..."
+                                        value={searchTerm}
+                                        onChange={(e) => setSearchTerm(e.target.value)}
+                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    />
+                                </div>
+                                <select
+                                    value={filterBy}
+                                    onChange={(e) => setFilterBy(e.target.value)}
+                                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                >
+                                    <option value="all">Todas las relevancia</option>
+                                    <option value="high">Alta relevancia (>80%)</option>
+                                    <option value="medium">Media relevancia (60-80%)</option>
+                                    <option value="low">Baja relevancia (&lt;60%)</option>
+                                    <option value="urgent">Urgentes</option>
+                                </select>
+                                <select
+                                    value={sortBy}
+                                    onChange={(e) => setSortBy(e.target.value)}
+                                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                >
+                                    <option value="created_at">Fecha de creación</option>
+                                    <option value="relevance_score">Relevancia</option>
+                                    <option value="amount_max">Cuantía máxima</option>
+                                    <option value="deadline">Fecha límite</option>
+                                    <option value="title">Título</option>
+                                </select>
+                                <button
+                                    onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                                >
+                                    {sortOrder === 'asc' ? '↑' : '↓'}
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div className="flex justify-between items-center mb-4">
+                            <div className="flex items-center space-x-4">
+                                <div className="text-lg font-semibold">
+                                    Mostrando {filteredAndSortedData.length} de {supabaseData.length} registros
+                                </div>
+                                <label className="flex items-center space-x-2">
+                                    <input
+                                        type="checkbox"
+                                        checked={autoSync}
+                                        onChange={(e) => setAutoSync(e.target.checked)}
+                                        className="rounded"
+                                    />
+                                    <span className="text-sm text-gray-600">Sincronización automática (30s)</span>
+                                </label>
+                            </div>
+                            <button
+                                onClick={fetchSupabaseData}
+                                disabled={isLoading}
+                                className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50"
+                            >
+                                {isLoading ? '🔄 Sincronizando...' : '🔄 Sincronizar'}
+                            </button>
+                        </div>
+                        
+                        <div className="overflow-x-auto">
+                            <table className="w-full border-collapse border border-gray-300">
+                                <thead>
+                                    <tr className="bg-gray-50">
+                                        <th className="border border-gray-300 px-4 py-2 text-left">ID</th>
+                                        <th className="border border-gray-300 px-4 py-2 text-left">Título</th>
+                                        <th className="border border-gray-300 px-4 py-2 text-left">Fuente</th>
+                                        <th className="border border-gray-300 px-4 py-2 text-left">Cuantía</th>
+                                        <th className="border border-gray-300 px-4 py-2 text-left">Fecha límite</th>
+                                        <th className="border border-gray-300 px-4 py-2 text-left">Relevancia</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredAndSortedData.length === 0 ? (
+                                        <tr>
+                                            <td colSpan="6" className="border border-gray-300 px-4 py-8 text-center text-gray-500">
+                                                {searchTerm || filterBy !== 'all' ? 
+                                                    '🔍 No se encontraron resultados con los filtros aplicados' : 
+                                                    '📭 No hay datos disponibles'
+                                                }
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        filteredAndSortedData.map(grant => (
+                                            <tr key={grant.id} className="hover:bg-gray-50">
+                                                <td className="border border-gray-300 px-4 py-2">{grant.id}</td>
+                                                <td className="border border-gray-300 px-4 py-2">
+                                                    <div className="max-w-xs truncate" title={grant.title}>
+                                                        {grant.title}
+                                                    </div>
+                                                </td>
+                                                <td className="border border-gray-300 px-4 py-2">{grant.source}</td>
+                                                <td className="border border-gray-300 px-4 py-2">
+                                                    €{grant.amount_min?.toLocaleString()} - €{grant.amount_max?.toLocaleString()}
+                                                </td>
+                                                <td className="border border-gray-300 px-4 py-2">{grant.deadline}</td>
+                                                <td className="border border-gray-300 px-4 py-2">
+                                                    <span className={`px-2 py-1 rounded text-xs ${
+                                                        grant.relevance_score > 0.8 ? 'bg-green-100 text-green-800' :
+                                                        grant.relevance_score > 0.6 ? 'bg-yellow-100 text-yellow-800' :
+                                                        'bg-red-100 text-red-800'
+                                                    }`}>
+                                                        {Math.round(grant.relevance_score * 100)}%
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Dashboard Stats Component
+        const DashboardStats = ({ grants }) => {
+            const stats = useMemo(() => {
+                const total = grants.length;
+                const newThisWeek = grants.filter(g => {
+                    const publishedDate = new Date(g.published_date);
+                    const weekAgo = new Date();
+                    weekAgo.setDate(weekAgo.getDate() - 7);
+                    return publishedDate > weekAgo;
+                }).length;
+                const urgent = grants.filter(g => g.urgency_level === 'critical' || g.urgency_level === 'high').length;
+                const totalAmount = grants.reduce((sum, g) => sum + g.amount_max, 0);
+                const avgMatch = grants.reduce((sum, g) => sum + g.relevance_score, 0) / grants.length;
+                
+                return { total, newThisWeek, urgent, totalAmount, avgMatch };
+            }, [grants]);
+            
+            return (
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+                    <div className="bg-white p-4 rounded-lg shadow card-hover">
+                        <div className="text-2xl font-bold text-blue-600">{stats.total}</div>
+                        <div className="text-sm text-gray-600">📊 Total Subvenciones</div>
+                    </div>
+                    <div className="bg-white p-4 rounded-lg shadow card-hover">
+                        <div className="text-2xl font-bold text-green-600">{stats.newThisWeek}</div>
+                        <div className="text-sm text-gray-600">🆕 Nuevas esta semana</div>
+                    </div>
+                    <div className="bg-white p-4 rounded-lg shadow card-hover">
+                        <div className="text-2xl font-bold text-red-600">{stats.urgent}</div>
+                        <div className="text-sm text-gray-600">⏰ Urgentes</div>
+                    </div>
+                    <div className="bg-white p-4 rounded-lg shadow card-hover">
+                        <div className="text-2xl font-bold text-purple-600">€{(stats.totalAmount / 1000000).toFixed(1)}M</div>
+                        <div className="text-sm text-gray-600">💰 Disponibles</div>
+                    </div>
+                    <div className="bg-white p-4 rounded-lg shadow card-hover">
+                        <div className="text-2xl font-bold text-amber-600">{Math.round(stats.avgMatch * 100)}%</div>
+                        <div className="text-sm text-gray-600">🎯 Match promedio</div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Filter Sidebar Component
+        const FilterSidebar = ({ filters, setFilters, isCollapsed, setIsCollapsed }) => {
+            const handleLocationChange = (location, checked) => {
+                const newLocations = checked 
+                    ? [...filters.locations, location]
+                    : filters.locations.filter(l => l !== location);
+                setFilters({ ...filters, locations: newLocations });
+            };
+            
+            const handleSectorChange = (sector, checked) => {
+                const newSectors = checked 
+                    ? [...filters.sectors, sector]
+                    : filters.sectors.filter(s => s !== sector);
+                setFilters({ ...filters, sectors: newSectors });
+            };
+            
+            const handleCompanyTypeChange = (type, checked) => {
+                const newTypes = checked 
+                    ? [...filters.company_types, type]
+                    : filters.company_types.filter(t => t !== type);
+                setFilters({ ...filters, company_types: newTypes });
+            };
+            
+            if (isCollapsed) {
+                return (
+                    <div className="w-12 bg-white shadow-lg rounded-lg p-2">
+                        <button 
+                            onClick={() => setIsCollapsed(false)}
+                            className="w-full p-2 text-gray-600 hover:text-blue-600"
+                        >
+                            ☰
+                        </button>
+                    </div>
+                );
+            }
+            
+            return (
+                <div className="w-80 bg-white shadow-lg rounded-lg p-6">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-lg font-semibold">Filtros</h3>
+                        <button 
+                            onClick={() => setIsCollapsed(true)}
+                            className="text-gray-600 hover:text-blue-600"
+                        >
+                            ←
+                        </button>
+                    </div>
+                    
+                    {/* Geografía */}
+                    <div className="mb-6">
+                        <h4 className="font-medium mb-3">📍 Geografía</h4>
+                        <div className="space-y-2">
+                            {['España', 'UE', 'Andalucía', 'Madrid', 'Cataluña'].map(location => (
+                                <label key={location} className="flex items-center">
+                                    <input 
+                                        type="checkbox" 
+                                        className="mr-2"
+                                        checked={filters.locations.includes(location)}
+                                        onChange={(e) => handleLocationChange(location, e.target.checked)}
+                                    />
+                                    <span className="text-sm">{location}</span>
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {/* Cuantía */}
+                    <div className="mb-6">
+                        <h4 className="font-medium mb-3">💰 Cuantía</h4>
+                        <div className="space-y-3">
+                            <div>
+                                <label className="text-sm text-gray-600">Mínimo: €{filters.amount_range.min.toLocaleString()}</label>
+                                <input 
+                                    type="range" 
+                                    min="0" 
+                                    max="2000000" 
+                                    step="5000"
+                                    value={filters.amount_range.min}
+                                    onChange={(e) => setFilters({
+                                        ...filters, 
+                                        amount_range: { ...filters.amount_range, min: parseInt(e.target.value) }
+                                    })}
+                                    className="w-full filter-range"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-sm text-gray-600">Máximo: €{filters.amount_range.max.toLocaleString()}</label>
+                                <input 
+                                    type="range" 
+                                    min="0" 
+                                    max="2000000" 
+                                    step="5000"
+                                    value={filters.amount_range.max}
+                                    onChange={(e) => setFilters({
+                                        ...filters, 
+                                        amount_range: { ...filters.amount_range, max: parseInt(e.target.value) }
+                                    })}
+                                    className="w-full filter-range"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {/* Tipo de Empresa */}
+                    <div className="mb-6">
+                        <h4 className="font-medium mb-3">🏢 Tipo de Empresa</h4>
+                        <div className="space-y-2">
+                            {[{key: 'startup', label: 'Startup'}, {key: 'pyme', label: 'PYME'}, {key: 'gran_empresa', label: 'Gran empresa'}].map(type => (
+                                <label key={type.key} className="flex items-center">
+                                    <input 
+                                        type="checkbox" 
+                                        className="mr-2"
+                                        checked={filters.company_types.includes(type.key)}
+                                        onChange={(e) => handleCompanyTypeChange(type.key, e.target.checked)}
+                                    />
+                                    <span className="text-sm">{type.label}</span>
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {/* Sectores */}
+                    <div className="mb-6">
+                        <h4 className="font-medium mb-3">📊 Sectores</h4>
+                        <div className="space-y-2">
+                            {['IA', 'Salud', 'Energía', 'Fintech', 'Digitalización', 'I+D', 'Tecnología'].map(sector => (
+                                <label key={sector} className="flex items-center">
+                                    <input 
+                                        type="checkbox" 
+                                        className="mr-2"
+                                        checked={filters.sectors.includes(sector)}
+                                        onChange={(e) => handleSectorChange(sector, e.target.checked)}
+                                    />
+                                    <span className="text-sm">{sector}</span>
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {/* Filtros Rápidos */}
+                    <div className="mb-6">
+                        <h4 className="font-medium mb-3">⚡ Filtros Rápidos</h4>
+                        <div className="space-y-2">
+                            <button className="w-full text-left px-3 py-2 bg-red-50 text-red-700 rounded hover:bg-red-100">
+                                🔥 Urgentes
+                            </button>
+                            <button className="w-full text-left px-3 py-2 bg-green-50 text-green-700 rounded hover:bg-green-100">
+                                ⭐ Top Match
+                            </button>
+                            <button className="w-full text-left px-3 py-2 bg-blue-50 text-blue-700 rounded hover:bg-blue-100">
+                                💰 >€50K
+                            </button>
+                            <button className="w-full text-left px-3 py-2 bg-purple-50 text-purple-700 rounded hover:bg-purple-100">
+                                🆕 Esta semana
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <button 
+                        onClick={() => setFilters({
+                            locations: [],
+                            sectors: [],
+                            company_types: [],
+                            amount_range: { min: 0, max: 2000000 },
+                            urgency_levels: [],
+                            sources: []
+                        })}
+                        className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                    >
+                        Limpiar filtros
+                    </button>
+                </div>
+            );
+        };
+        
+        // Grant Card Component
+        const GrantCard = ({ grant, onView, onSave, onAlert }) => {
+            const getRelevanceBadge = (score) => {
+                if (score >= 0.9) return { text: '⭐ PERFECTA', class: 'relevance-perfect' };
+                if (score >= 0.7) return { text: '🎯 MUY BUENA', class: 'relevance-high' };
+                if (score >= 0.5) return { text: '👍 BUENA', class: 'relevance-good' };
+                return { text: '📝 REVISAR', class: 'relevance-low' };
+            };
+            
+            const getUrgencyBadge = (level) => {
+                const badges = {
+                    critical: { text: '🔴 CRÍTICO', class: 'urgency-critical' },
+                    high: { text: '🟡 ALTO', class: 'urgency-high' },
+                    medium: { text: '🟠 MEDIO', class: 'urgency-medium' },
+                    low: { text: '🟢 BAJO', class: 'urgency-low' }
+                };
+                return badges[level] || badges.low;
+            };
+            
+            const getDaysRemaining = (deadline) => {
+                const today = new Date();
+                const deadlineDate = new Date(deadline);
+                const diffTime = deadlineDate - today;
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                return diffDays;
+            };
+            
+            const relevanceBadge = getRelevanceBadge(grant.relevance_score);
+            const urgencyBadge = getUrgencyBadge(grant.urgency_level);
+            const daysRemaining = getDaysRemaining(grant.deadline);
+            
+            return (
+                <div className="bg-white rounded-lg shadow-md p-6 card-hover">
+                    <div className="flex justify-between items-start mb-3">
+                        <span className={`px-2 py-1 rounded text-white text-xs font-medium ${relevanceBadge.class}`}>
+                            {relevanceBadge.text}
+                        </span>
+                        <span className={`px-2 py-1 rounded text-white text-xs font-medium ${urgencyBadge.class}`}>
+                            {urgencyBadge.text}
+                        </span>
+                    </div>
+                    
+                    <h3 className="text-lg font-semibold mb-2 cursor-pointer hover:text-blue-600" onClick={() => onView(grant)}>
+                        {grant.title}
+                    </h3>
+                    
+                    <p className="text-gray-600 text-sm mb-3 line-clamp-2">
+                        {grant.summary}
+                    </p>
+                    
+                    <div className="flex justify-between items-center mb-3">
+                        <div className="text-lg font-bold text-green-600">
+                            €{grant.amount_min.toLocaleString()} - €{grant.amount_max.toLocaleString()}
+                        </div>
+                        <div className={`text-sm font-medium ${
+                            daysRemaining <= 7 ? 'text-red-600' : 
+                            daysRemaining <= 15 ? 'text-orange-600' : 
+                            daysRemaining <= 30 ? 'text-yellow-600' : 'text-green-600'
+                        }`}>
+                            📅 {daysRemaining > 0 ? `${daysRemaining} días` : 'Vencida'}
+                        </div>
+                    </div>
+                    
+                    <div className="flex flex-wrap gap-1 mb-4">
+                        {grant.sectors.slice(0, 3).map(sector => (
+                            <span key={sector} className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">
+                                {sector}
+                            </span>
+                        ))}
+                        {grant.sectors.length > 3 && (
+                            <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded">
+                                +{grant.sectors.length - 3}
+                            </span>
+                        )}
+                    </div>
+                    
+                    <div className="flex justify-between items-center">
+                        <div className="text-sm text-gray-500">
+                            📍 {grant.location.join(', ')}
+                        </div>
+                        <div className="flex space-x-2">
+                            <button 
+                                onClick={() => onView(grant)}
+                                className="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600"
+                            >
+                                👁️ Ver
+                            </button>
+                            <button 
+                                onClick={() => onSave(grant.id)}
+                                className="px-3 py-1 bg-green-500 text-white text-sm rounded hover:bg-green-600"
+                            >
+                                💾 Guardar
+                            </button>
+                            <button 
+                                onClick={() => onAlert(grant.id)}
+                                className="px-3 py-1 bg-yellow-500 text-white text-sm rounded hover:bg-yellow-600"
+                            >
+                                🔔 Alertar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Grant Detail Modal Component
+        const GrantDetailModal = ({ grant, isOpen, onClose }) => {
+            const [activeTab, setActiveTab] = useState('details');
+            
+            if (!isOpen || !grant) return null;
+            
+            const tabs = [
+                { id: 'details', label: 'Detalles', icon: '📋' },
+                { id: 'requirements', label: 'Requisitos', icon: '📝' },
+                { id: 'process', label: 'Proceso', icon: '🔄' },
+                { id: 'contact', label: 'Contacto', icon: '📞' }
+            ];
+            
+            return (
+                <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden">
+                        <div className="flex justify-between items-center p-6 border-b">
+                            <h2 className="text-2xl font-bold">{grant.title}</h2>
+                            <button 
+                                onClick={onClose}
+                                className="text-gray-500 hover:text-gray-700 text-2xl"
+                            >
+                                ×
+                            </button>
+                        </div>
+                        
+                        <div className="flex border-b">
+                            {tabs.map(tab => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setActiveTab(tab.id)}
+                                    className={`px-6 py-3 font-medium ${
+                                        activeTab === tab.id 
+                                            ? 'border-b-2 border-blue-500 text-blue-600' 
+                                            : 'text-gray-600 hover:text-blue-600'
+                                    }`}
+                                >
+                                    {tab.icon} {tab.label}
+                                </button>
+                            ))}
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto max-h-[60vh]">
+                            {activeTab === 'details' && (
+                                <div className="space-y-4">
+                                    <div>
+                                        <h3 className="font-semibold mb-2">Descripción</h3>
+                                        <p className="text-gray-700">{grant.description || grant.summary}</p>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <h4 className="font-medium">💰 Cuantía</h4>
+                                            <p>€{grant.amount_min.toLocaleString()} - €{grant.amount_max.toLocaleString()}</p>
+                                        </div>
+                                        <div>
+                                            <h4 className="font-medium">📅 Fecha límite</h4>
+                                            <p>{new Date(grant.deadline).toLocaleDateString('es-ES')}</p>
+                                        </div>
+                                        <div>
+                                            <h4 className="font-medium">📍 Ubicación</h4>
+                                            <p>{grant.location.join(', ')}</p>
+                                        </div>
+                                        <div>
+                                            <h4 className="font-medium">🏢 Tipo de empresa</h4>
+                                            <p>{grant.company_types.join(', ')}</p>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <h4 className="font-medium mb-2">🏷️ Sectores</h4>
+                                        <div className="flex flex-wrap gap-2">
+                                            {grant.sectors.map(sector => (
+                                                <span key={sector} className="px-3 py-1 bg-blue-100 text-blue-700 rounded">
+                                                    {sector}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {activeTab === 'requirements' && (
+                                <div>
+                                    <h3 className="font-semibold mb-4">Requisitos</h3>
+                                    <ul className="space-y-2">
+                                        {grant.requirements.map((req, index) => (
+                                            <li key={index} className="flex items-start">
+                                                <span className="text-green-500 mr-2">✓</span>
+                                                <span>{req}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                            
+                            {activeTab === 'process' && (
+                                <div>
+                                    <h3 className="font-semibold mb-4">Proceso de solicitud</h3>
+                                    <div className="space-y-4">
+                                        <div className="flex items-center">
+                                            <div className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center mr-4">1</div>
+                                            <div>
+                                                <h4 className="font-medium">Preparación de documentación</h4>
+                                                <p className="text-gray-600">Reúne todos los documentos requeridos</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center">
+                                            <div className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center mr-4">2</div>
+                                            <div>
+                                                <h4 className="font-medium">Presentación de solicitud</h4>
+                                                <p className="text-gray-600">Envía la solicitud antes de la fecha límite</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center">
+                                            <div className="w-8 h-8 bg-gray-400 text-white rounded-full flex items-center justify-center mr-4">3</div>
+                                            <div>
+                                                <h4 className="font-medium">Evaluación</h4>
+                                                <p className="text-gray-600">Proceso de evaluación por parte del organismo</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center">
+                                            <div className="w-8 h-8 bg-gray-400 text-white rounded-full flex items-center justify-center mr-4">4</div>
+                                            <div>
+                                                <h4 className="font-medium">Resolución</h4>
+                                                <p className="text-gray-600">Comunicación de la resolución</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {activeTab === 'contact' && (
+                                <div>
+                                    <h3 className="font-semibold mb-4">Información de contacto</h3>
+                                    <div className="space-y-3">
+                                        <div>
+                                            <h4 className="font-medium">📧 Email</h4>
+                                            <p>info@subvenciones.gob.es</p>
+                                        </div>
+                                        <div>
+                                            <h4 className="font-medium">📞 Teléfono</h4>
+                                            <p>+34 900 123 456</p>
+                                        </div>
+                                        <div>
+                                            <h4 className="font-medium">🌐 Web</h4>
+                                            <p>www.subvenciones.gob.es</p>
+                                        </div>
+                                        <div>
+                                            <h4 className="font-medium">📍 Dirección</h4>
+                                            <p>Calle Ejemplo, 123<br/>28001 Madrid, España</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        
+                        <div className="flex justify-between items-center p-6 border-t bg-gray-50">
+                            <div className="flex space-x-3">
+                                <button className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+                                    📄 Descargar PDF
+                                </button>
+                                <button className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600">
+                                    💾 Guardar
+                                </button>
+                                <button className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600">
+                                    🔔 Crear alerta
+                                </button>
+                            </div>
+                            <div className="text-sm text-gray-600">
+                                Probabilidad de éxito: <span className="font-semibold text-green-600">85%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Main App Component
+        const App = () => {
+            const [grants, setGrants] = useState(mockGrants);
+            
+            // Cargar variables de entorno al iniciar la aplicación
+            useEffect(() => {
+                const initializeConfig = async () => {
+                    try {
+                        const envVars = await loadEnvConfig();
+                        ENV_CONFIG = { ...DEFAULT_CONFIG, ...envVars };
+                        console.log('Configuración cargada:', {
+                            n8nUrl: ENV_CONFIG.N8N_BASE_URL,
+                            supabaseUrl: ENV_CONFIG.SUPABASE_URL,
+                            hasN8NKey: !!ENV_CONFIG.N8N_API_KEY,
+                            hasSupabaseKey: !!ENV_CONFIG.SUPABASE_ANON_KEY
+                        });
+                    } catch (error) {
+                        console.error('Error inicializando configuración:', error);
+                    }
+                };
+                
+                initializeConfig();
+            }, []);
+            const [filteredGrants, setFilteredGrants] = useState(mockGrants);
+            const [searchQuery, setSearchQuery] = useState('');
+            const [filters, setFilters] = useState({
+                locations: [],
+                sectors: [],
+                company_types: [],
+                amount_range: { min: 0, max: 2000000 },
+                urgency_levels: [],
+                sources: []
+            });
+            
+            // Sistema de filtros inteligentes
+            const [intelligentFilterSystem] = useState(() => new IntelligentFilterSystem());
+            const [smartSuggestions, setSmartSuggestions] = useState([]);
+            const [searchInsights, setSearchInsights] = useState(null);
+            const [isIntelligentSearchEnabled, setIsIntelligentSearchEnabled] = useState(true);
+            const [selectedGrant, setSelectedGrant] = useState(null);
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [isFilterCollapsed, setIsFilterCollapsed] = useState(false);
+            const [toast, setToast] = useState(null);
+            const [isLoading, setIsLoading] = useState(false);
+            const [isN8NConfigOpen, setIsN8NConfigOpen] = useState(false);
+        const [isSupabaseDataOpen, setIsSupabaseDataOpen] = useState(false);
+        const [isAIPromptOpen, setIsAIPromptOpen] = useState(false);
+        const [isWorkflowControlOpen, setIsWorkflowControlOpen] = useState(false);
+            const [isWorkflowDashboardOpen, setIsWorkflowDashboardOpen] = useState(false);
+            const [isAdvancedFiltersOpen, setIsAdvancedFiltersOpen] = useState(false);
+            const [currentFilters, setCurrentFilters] = useState({});
+            const [notifications, setNotifications] = useState([
+                {
+                    id: 1,
+                    type: 'new_grant',
+                    title: 'Nueva subvención encontrada',
+                    message: 'Se ha encontrado una nueva subvención de digitalización para PYMES',
+                    timestamp: new Date().toISOString(),
+                    read: false,
+                    action: {
+                        label: 'Ver detalles',
+                        handler: () => console.log('Ver detalles de subvención')
+                    }
+                },
+                {
+                    id: 2,
+                    type: 'deadline_warning',
+                    title: 'Fecha límite próxima',
+                    message: 'La subvención "Innovación Digital 2024" cierra en 3 días',
+                    timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+                    read: false
+                },
+                {
+                    id: 3,
+                    type: 'workflow_status',
+                    title: 'Workflow actualizado',
+                    message: 'El workflow de monitoreo se ha ejecutado correctamente',
+                    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+                    read: true
+                }
+            ]);
+            
+            // Cargar datos de Supabase al inicializar
+            useEffect(() => {
+                const loadInitialData = async () => {
+                    try {
+                        setIsLoading(true);
+                        const supabaseGrants = await supabaseService.getGrants();
+                        if (supabaseGrants && supabaseGrants.length > 0) {
+                            setGrants(supabaseGrants);
+                            showToast('Datos cargados desde Supabase', 'success');
+                        }
+                    } catch (error) {
+                        console.error('Error loading initial data:', error);
+                        showToast('Usando datos de ejemplo (error al conectar con Supabase)', 'warning');
+                    } finally {
+                        setIsLoading(false);
+                    }
+                };
+                
+                loadInitialData();
+            }, []);
+            
+            // Filter grants based on search query and filters
+            useEffect(() => {
+                let filtered = grants;
+                
+                // Search query filter
+                if (searchQuery) {
+                    filtered = filtered.filter(grant => 
+                        grant.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        grant.summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        grant.sectors.some(sector => sector.toLowerCase().includes(searchQuery.toLowerCase()))
+                    );
+                }
+                
+                // Location filter
+                if (filters.locations.length > 0) {
+                    filtered = filtered.filter(grant => 
+                        grant.location.some(loc => filters.locations.includes(loc))
+                    );
+                }
+                
+                // Sector filter
+                if (filters.sectors.length > 0) {
+                    filtered = filtered.filter(grant => 
+                        grant.sectors.some(sector => filters.sectors.includes(sector))
+                    );
+                }
+                
+                // Company type filter
+                if (filters.company_types.length > 0) {
+                    filtered = filtered.filter(grant => 
+                        grant.company_types.some(type => filters.company_types.includes(type))
+                    );
+                }
+                
+                // Amount range filter
+                filtered = filtered.filter(grant => 
+                    grant.amount_max >= filters.amount_range.min && 
+                    grant.amount_min <= filters.amount_range.max
+                );
+                
+                setFilteredGrants(filtered);
+            }, [grants, searchQuery, filters]);
+            
+            const handleSearch = async () => {
+                if (!searchQuery.trim()) {
+                    showToast('Por favor, introduce un término de búsqueda', 'warning');
+                    return;
+                }
+                
+                setIsLoading(true);
+                
+                try {
+                    if (isIntelligentSearchEnabled) {
+                        // Usar sistema de filtros inteligentes
+                        const intelligentResults = await intelligentFilterSystem.processQuery(searchQuery, grants);
+                        
+                        setFilteredGrants(intelligentResults.results);
+                        setSmartSuggestions(intelligentResults.suggestions);
+                        setSearchInsights({
+                            entities: intelligentResults.entities,
+                            intent: intelligentResults.intent,
+                            personalizedFilters: intelligentResults.personalizedFilters,
+                            totalResults: intelligentResults.results.length
+                        });
+                        
+                        // Actualizar perfil de usuario
+                        intelligentFilterSystem.userProfile.updateInteraction('search', 'perform');
+                        
+                        showToast(`Búsqueda inteligente completada: ${intelligentResults.results.length} resultados`, 'success');
+                    } else {
+                        // Búsqueda tradicional
+                        const filtered = grants.filter(grant => 
+                            grant.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                            grant.summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                            grant.sectors.some(sector => sector.toLowerCase().includes(searchQuery.toLowerCase()))
+                        );
+                        setFilteredGrants(filtered);
+                        showToast(`Búsqueda completada: ${filtered.length} resultados`, 'success');
+                    }
+                } catch (error) {
+                    console.error('Error en búsqueda:', error);
+                    showToast('Error al realizar la búsqueda', 'error');
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            const handleViewGrant = (grant) => {
+                setSelectedGrant(grant);
+                setIsModalOpen(true);
+                
+                // Actualizar perfil de usuario con la interacción
+                if (intelligentFilterSystem) {
+                    intelligentFilterSystem.userProfile.updateInteraction(grant.id, 'view');
+                }
+            };
+            
+            const handleSaveGrant = (grantId) => {
+                // Actualizar perfil de usuario
+                if (intelligentFilterSystem) {
+                    intelligentFilterSystem.userProfile.updateInteraction(grantId, 'save');
+                }
+                showToast('Subvención guardada', 'success');
+            };
+            
+            const handleCreateAlert = (grantId) => {
+                // Actualizar perfil de usuario
+                if (intelligentFilterSystem) {
+                    intelligentFilterSystem.userProfile.updateInteraction(grantId, 'click');
+                }
+                showToast('Alerta creada', 'success');
+            };
+            
+            const toggleIntelligentSearch = () => {
+                setIsIntelligentSearchEnabled(!isIntelligentSearchEnabled);
+                showToast(
+                    `Búsqueda inteligente ${!isIntelligentSearchEnabled ? 'activada' : 'desactivada'}`, 
+                    'info'
+                );
+            };
+            
+            const handleViewGrant = (grant) => {
+                setSelectedGrant(grant);
+                setIsModalOpen(true);
+            };
+            
+            const handleSaveGrant = (grantId) => {
+                showToast('Subvención guardada', 'success');
+            };
+            
+            const handleCreateAlert = (grantId) => {
+                showToast('Alerta creada', 'success');
+            };
+            
+            const showToast = (message, type) => {
+                setToast({ message, type });
+            };
+            
+            const closeToast = () => {
+                setToast(null);
+            };
+            
+            const handleTriggerWorkflow = async (searchParams) => {
+                setIsLoading(true);
+                try {
+                    // Ejecutar workflow de n8n
+                    const workflowResult = await n8nService.triggerWorkflow(searchParams);
+                    
+                    if (workflowResult) {
+                        showToast('Workflow ejecutado exitosamente. Buscando nuevos datos...', 'success');
+                        
+                        // Esperar un poco para que el workflow procese los datos
+                        setTimeout(async () => {
+                            try {
+                                // Actualizar datos desde Supabase
+                                const updatedGrants = await supabaseService.getGrants(filters);
+                                setGrants(updatedGrants);
+                                showToast('Datos actualizados desde Supabase', 'success');
+                            } catch (error) {
+                                showToast('Workflow ejecutado, pero error al actualizar datos', 'warning');
+                            }
+                            setIsLoading(false);
+                            setIsN8NConfigOpen(false);
+                        }, 3000);
+                    } else {
+                        throw new Error('No se recibió respuesta del workflow');
+                    }
+                } catch (error) {
+                    console.error('Error executing workflow:', error);
+                    showToast(`Error al ejecutar workflow: ${error.message}`, 'error');
+                    setIsLoading(false);
+                }
+            };
+            
+            const handleOpenN8NConfig = () => {
+                setIsN8NConfigOpen(true);
+            };
+            
+            const handleOpenSupabaseData = () => {
+                setIsSupabaseDataOpen(true);
+            };
+            
+            const handleOpenAIPrompt = () => {
+            setIsAIPromptOpen(true);
+        };
+        
+        const handleOpenWorkflowControl = () => {
+                setIsWorkflowControlOpen(true);
+            };
+            
+            const handleOpenWorkflowDashboard = () => {
+                setIsWorkflowDashboardOpen(true);
+            };
+            
+            const handleOpenAdvancedFilters = () => {
+                setIsAdvancedFiltersOpen(true);
+            };
+            
+            const handleFilterChange = (newFilters) => {
+                setCurrentFilters(newFilters);
+                // Aquí se aplicarían los filtros a los datos de Supabase
+                console.log('Filtros aplicados:', newFilters);
+                // TODO: Implementar lógica de filtrado real
+            };
+            
+            const handleDismissNotification = (notificationId) => {
+                setNotifications(prev => prev.filter(n => n.id !== notificationId));
+            };
+            
+            const handleMarkAllNotificationsRead = () => {
+                setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+            };
+            
+            // Simular nuevas notificaciones en tiempo real
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    // Simular una nueva notificación cada 2 minutos
+                    const randomTypes = ['new_grant', 'deadline_warning', 'workflow_status'];
+                    const randomType = randomTypes[Math.floor(Math.random() * randomTypes.length)];
+                    
+                    const newNotification = {
+                        id: Date.now(),
+                        type: randomType,
+                        title: randomType === 'new_grant' ? 'Nueva subvención encontrada' : 
+                               randomType === 'deadline_warning' ? 'Fecha límite próxima' : 'Actualización de workflow',
+                        message: randomType === 'new_grant' ? 'Se ha encontrado una nueva oportunidad de financiación' :
+                                randomType === 'deadline_warning' ? 'Una subvención está próxima a cerrar' : 'El sistema ha completado una tarea',
+                        timestamp: new Date().toISOString(),
+                        read: false
+                    };
+                    
+                    setNotifications(prev => [newNotification, ...prev.slice(0, 9)]); // Mantener solo las últimas 10
+                }, 120000); // 2 minutos
+                
+                return () => clearInterval(interval);
+            }, []);
+            
+            return (
+                <div className="min-h-screen bg-gray-50">
+                    <Header 
+                    onSearch={handleSearch} 
+                    searchQuery={searchQuery} 
+                    setSearchQuery={setSearchQuery}
+                    onOpenN8NConfig={handleOpenN8NConfig}
+                    onOpenSupabaseData={handleOpenSupabaseData}
+                    onOpenAIPrompt={handleOpenAIPrompt}
+                    onOpenWorkflowControl={handleOpenWorkflowControl}
+                    onOpenWorkflowDashboard={handleOpenWorkflowDashboard}
+                    onOpenAdvancedFilters={handleOpenAdvancedFilters}
+                    notifications={notifications}
+                    onDismissNotification={handleDismissNotification}
+                    onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+                />
+                    
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+                        <DashboardStats grants={filteredGrants} />
+                        
+                        <div className="flex gap-6">
+                            <FilterSidebar 
+                                filters={filters}
+                                setFilters={setFilters}
+                                isCollapsed={isFilterCollapsed}
+                                setIsCollapsed={setIsFilterCollapsed}
+                            />
+                            
+                            <div className="flex-1">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-xl font-semibold">
+                                        Resultados ({filteredGrants.length})
+                                    </h2>
+                                    <select className="px-3 py-2 border border-gray-300 rounded-lg">
+                                        <option>Ordenar por relevancia</option>
+                                        <option>Ordenar por fecha límite</option>
+                                        <option>Ordenar por cuantía</option>
+                                    </select>
+                                </div>
+                                
+                                {isLoading ? (
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                        {[1, 2, 3, 4].map(i => (
+                                            <div key={i} className="bg-white rounded-lg shadow-md p-6">
+                                                <div className="skeleton h-4 w-3/4 mb-3"></div>
+                                                <div className="skeleton h-3 w-full mb-2"></div>
+                                                <div className="skeleton h-3 w-2/3 mb-4"></div>
+                                                <div className="skeleton h-8 w-1/3"></div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                        {filteredGrants.map(grant => (
+                                            <GrantCard 
+                                                key={grant.id}
+                                                grant={grant}
+                                                onView={handleViewGrant}
+                                                onSave={handleSaveGrant}
+                                                onAlert={handleCreateAlert}
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                                
+                                {filteredGrants.length === 0 && !isLoading && (
+                                    <div className="text-center py-12">
+                                        <div className="text-6xl mb-4">🔍</div>
+                                        <h3 className="text-xl font-semibold mb-2">No se encontraron resultados</h3>
+                                        <p className="text-gray-600 mb-4">Intenta ajustar tus filtros o términos de búsqueda</p>
+                                        <button 
+                                            onClick={() => {
+                                                setSearchQuery('');
+                                                setFilters({
+                                                    locations: [],
+                                                    sectors: [],
+                                                    company_types: [],
+                                                    amount_range: { min: 0, max: 2000000 },
+                                                    urgency_levels: [],
+                                                    sources: []
+                                                });
+                                            }}
+                                            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                                        >
+                                            Limpiar filtros
+                                        </button>
+                                    </div>
+                                )}
+                                
+                                {filteredGrants.length > 0 && (
+                                    <div className="flex justify-center mt-8">
+                                        <div className="flex space-x-2">
+                                            <button className="px-3 py-2 border border-gray-300 rounded hover:bg-gray-50">← Anterior</button>
+                                            <button className="px-3 py-2 bg-blue-500 text-white rounded">1</button>
+                                            <button className="px-3 py-2 border border-gray-300 rounded hover:bg-gray-50">2</button>
+                                            <button className="px-3 py-2 border border-gray-300 rounded hover:bg-gray-50">3</button>
+                                            <button className="px-3 py-2 border border-gray-300 rounded hover:bg-gray-50">Siguiente →</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </main>
+                    
+                    <GrantDetailModal 
+                        grant={selectedGrant}
+                        isOpen={isModalOpen}
+                        onClose={() => setIsModalOpen(false)}
+                    />
+                    
+                    {toast && (
+                        <Toast 
+                            message={toast.message} 
+                            type={toast.type} 
+                            onClose={closeToast} 
+                        />
+                    )}
+                    
+                    {isN8NConfigOpen && (
+                        <N8NConfigPanel 
+                            onClose={() => setIsN8NConfigOpen(false)}
+                            onTriggerWorkflow={handleTriggerWorkflow}
+                        />
+                    )}
+                    
+                    {isSupabaseDataOpen && (
+                        <SupabaseDataPanel 
+                            onClose={() => setIsSupabaseDataOpen(false)}
+                        />
+                    )}
+                    
+                    {isAIPromptOpen && (
+                        <AIPromptPanel 
+                            isOpen={isAIPromptOpen}
+                            onClose={() => setIsAIPromptOpen(false)}
+                            showToast={showToast}
+                        />
+                    )}
+                    
+                    {isWorkflowControlOpen && (
+                        <WorkflowControlPanel 
+                            isOpen={isWorkflowControlOpen}
+                            onClose={() => setIsWorkflowControlOpen(false)}
+                            showToast={showToast}
+                        />
+                    )}
+                    
+                    {isWorkflowDashboardOpen && (
+                        <WorkflowDashboard 
+                            isOpen={isWorkflowDashboardOpen}
+                            onClose={() => setIsWorkflowDashboardOpen(false)}
+                            showToast={showToast}
+                        />
+                    )}
+                    
+                    {isAdvancedFiltersOpen && (
+                        <AdvancedFilters 
+                            isOpen={isAdvancedFiltersOpen}
+                            onClose={() => setIsAdvancedFiltersOpen(false)}
+                            currentFilters={currentFilters}
+                            onFilterChange={handleFilterChange}
+                        />
+                    )}
+                </div>
+            );
+        };
+        
+        // Render the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

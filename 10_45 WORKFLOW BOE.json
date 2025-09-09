@@ -1,0 +1,647 @@
+{
+  "name": "10:45 WORKFLOW BOE",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// coge el array completo\nconst urls = $node[\"HTML1\"].json.Ultimo_BOE;\n// por cada URL devolvemos un item separado\nreturn urls.map(u => ({ json: { Ultimo_BOE: u } }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1460,
+        220
+      ],
+      "id": "8735f725-475e-4556-8ee9-b241c46c7f05",
+      "name": "Code"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Coge todos los items que vienen del nodo “Filter”\nconst items = $items('Filter2');\n// Quita el primer elemento\nitems.shift();\n// Devuélvelos, así cada uno sigue siendo un item separado\nreturn items;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1020,
+        220
+      ],
+      "id": "647164b2-fed8-482d-85f2-18fdad6abe41",
+      "name": "Code1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Eres un evaluador de subvenciones con un filtro extremadamente restrictivo y mentalidad de “por defecto, NO”. Tu objetivo único es identificar solo aquellas subvenciones que estén ABSOLUTA, INEQUÍVOCA Y EXCLUSIVAMENTE dirigidas a:\n\nInvestigación, Desarrollo e Innovación (I+D+i) disruptiva o transformadora: creación de conocimiento nuevo, desarrollo de prototipos complejos, patentes, investigación aplicada o experimental avanzada. NO sirve “innovación” genérica.\n\nUso INTENSIVO, AVANZADO y ESPECÍFICO de tecnología de frontera: IA avanzada, computación cuántica, biotecnología de vanguardia, robótica de nueva generación, materiales avanzados, ciberseguridad compleja en I+D. NO basta con digitalización, software estándar o mejoras incrementales.\n\nEstos dos puntos deben ser el corazón y la razón exclusiva de la subvención, aplicable a PYMES (≤ 250 empleados), incluidos fondos Next Generation.\n\nMás del 95% de las subvenciones NO aplicarán. Si detectas el más mínimo indicio de que el foco principal NO es I+D+i intensiva y uso de tecnología de frontera según lo definido, debes responder “NO” de forma rotunda.\n\nAnaliza con escepticismo extremo el sumario de la convocatoria que te facilito:\n\n{\n  \"sumario\": {{ $json.text }}\n}\n\nDetermina para cada subvención individual si está DEMOSTRABLEMENTE y EXCLUSIVAMENTE diseñada para fomentar I+D+i genuina y tecnología avanzada de frontera.\n\nTambién extrae:\n– Plazos y fechas límite\n– Cuantía máxima o rango de financiación\n– Fecha de publicación\n– Requisitos clave (tamaño empresa, sectores, etc.)\n- Tipo de convocatoria: programas/ayudas/subvenciones/licitaciones...\n– Otros hitos relevantes (fases, resoluciones, etc.)\n\nSi hay ambigüedad o su objetivo principal es otro (p.ej. infraestructura, digitalización básica, sostenibilidad sin I+D, internacionalización, eficiencia energética sin I+D, marketing, etc.), tu respuesta debe ser “NO” y explicar brevemente el motivo.\n\nSi, y solo si, la subvención CUMPLE AL 100% los requisitos descritos (I+D+i intensiva y uso de tecnología avanzada, con carácter exclusivo y de frontera), responde “SI” y añade un resumen muy breve (máx. 4 frases) que lo justifique.\n\nFormatea tu respuesta exclusivamente así, usando JSON. Si algún dato no existe, escribe “N/A”:\n{\n  \"titulo\": \"Título de la convocatoria EXPLICITO en el documento en LETRAS MAYÚSCULAS (Para uniformidad con todos los datos)\",\n  \"aplica\": \"SI\" o \"NO\",\n  \"resumen\": \"(solo si aplica = “SI”) breve descripción de la ayuda enfocada en I+D+i y la tecnología avanzada, justificando tu elección. (Máximo 4 frases, enfocadas en la exclusividad y el nivel de I+D+i)\",\n  \"razon\": \"(solo si aplica = “NO\" o \"RS\") explicación breve y precisa de por qué NO encaja en el perfil de I+D+i intensiva y tecnología avanzada o porque es ambigua. (Máximo 2 frases, concisas y directas)\",\n  \"plazos\": \"(solo si aplica = “SI”) Fechas límite y periodos de solicitud. Si hay varios, especifica.\",\n  \"cuantia\": \"(solo si aplica = “SI”) Cuantía máxima o rangos de financiación disponibles.\",\n  \"fecha_salida\": \"(solo si aplica = “SI”) Fecha de publicación o inicio de la convocatoria.\",\n  \"requisitos\": \"(solo si aplica = “SI”) Requisitos clave que deben cumplir los solicitantes (ej. tamaño de empresa, sector, etc.).\",\n\"tipo_convocatoria\": (solo si aplica \"SI\") Tipo de la convocatoria entre las siguientes opciones: programas/ayudas/subvenciones/licitaciones.\n  \"hitos_importantes\": \"(solo si aplica = “SI”) Otros hitos relevantes como fases de evaluación, fechas de resolución, etc.\",\n  \"fecha\": \"{{ new Date().toISOString().split('T')[0] }}\"\n}\n\nIMPORTANTE: Responde SOLO y EXCLUSIVAMENTE con este JSON. NADA MÁS. Es obligatorio incluir todas las claves tal y como aparecen, aunque sean “N/A”.",
+        "batching": {
+          "batchSize": 12,
+          "delayBetweenBatches": 61000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        0,
+        0
+      ],
+      "id": "5fd0e516-8418-47a2-87da-b4cd800e1207",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1) Calculamos la fecha de hoy en YYYYMMDD\nconst today = new Date();\nconst yyyy  = today.getFullYear();\nconst mm    = String(today.getMonth() + 1).padStart(2, '0');\nconst dd    = String(today.getDate()).padStart(2, '0');\nconst date  = `${yyyy}${mm}${dd}`;\n\n// 2) Recorremos cada item de entrada y le añadimos el id `GA+fecha+índice`\nconst newItems = items.map((item, idx) => {\n  return {\n    json: {\n      ...item.json,\n      id: `BOE${date}${idx + 1}`\n    },\n    binary: item.binary, // si tienes datos binarios, si no puedes omitir esta línea\n  };\n});\n\n// 3) Devolvemos el array para que n8n lo procese como N items de salida\nreturn newItems;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        140
+      ],
+      "id": "4a87b28a-1598-4f6c-9222-235dd939a786",
+      "name": "ID BOE"
+    },
+    {
+      "parameters": {
+        "url": "={{ \"https://www.boe.es/boe/dias/\" + new Date().toISOString().slice(0,10).replace(/-/g,\"/\") + \"/\" }}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1900,
+        220
+      ],
+      "id": "4107dab0-0811-429a-af33-0c1e7ac14cba",
+      "name": "GET LINK BOE"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash-lite-preview-06-17",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        20,
+        200
+      ],
+      "id": "8405e950-76ce-4c7f-a42b-bbf155b988e7",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LN8uSgUI1hK90DeZ",
+          "name": "Google Gemini(PaLM) Api account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "Ultimo_BOE",
+              "cssSelector": "a",
+              "returnValue": "attribute",
+              "attribute": "href",
+              "returnArray": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [
+        -1680,
+        220
+      ],
+      "id": "7c1aaa34-1ffd-456c-8851-2ca4ddf71598",
+      "name": "HTML1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d47a6a61-019e-4bfc-be92-4543224f1b3b",
+              "leftValue": "={{ $json.Ultimo_BOE }}",
+              "rightValue": "/boe/dias",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "1495accd-7145-4e3e-a029-d5d32f8d35cb",
+              "leftValue": "={{ $json.Ultimo_BOE }}",
+              "rightValue": "pdf",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        -1240,
+        220
+      ],
+      "id": "649b1cff-86d8-493b-8bc6-eecb30343aa8",
+      "name": "Filter2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0312d4e-629b-44db-8591-7958e6cfd487",
+              "leftValue": "={{ $json.aplica }}",
+              "rightValue": "NO",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1140,
+        140
+      ],
+      "id": "216a2e46-c0a5-4694-b40b-5db101d8ddc2",
+      "name": "Filter29"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -740,
+        220
+      ],
+      "id": "c6a76f7a-81f1-437e-8918-410346acbf79",
+      "name": "Loop Over Items2"
+    },
+    {
+      "parameters": {
+        "url": "=https://boe.es{{ $json.Ultimo_BOE }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -500,
+        320
+      ],
+      "id": "11b9b56d-b210-4dc1-abd9-c911134df9bd",
+      "name": "HTTP Request1"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 4,
+              "triggerAtMinute": 45
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2140,
+        220
+      ],
+      "id": "593b8098-ce47-4ed5-95df-1c48b8a0ec20",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        140
+      ],
+      "id": "fa23a095-1286-4003-addf-6e74252ebfad",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        960,
+        140
+      ],
+      "id": "f707b044-dd58-43ff-b8e9-6dcf27cc8216",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Función para intentar \"cerrar\" cadenas sin terminar añadiendo comillas y llaves al final\nfunction intentarReparar(jsonString) {\n  // Quitar comas finales\n  jsonString = jsonString.replace(/,(\\s*[}\\]])/, '$1');\n  // Añadir llaves de cierre si faltan\n  const openBraces = (jsonString.match(/{/g) || []).length;\n  const closeBraces = (jsonString.match(/}/g) || []).length;\n  if (openBraces > closeBraces) {\n    jsonString += '}'.repeat(openBraces - closeBraces);\n  }\n  return jsonString;\n}\n\nconst output = [];\n\nfor (const item of items) {\n  const raw = item.json.text || '';\n\n  // 1) Extraer contenido entre ```json ... ```\n  const match = raw.match(/```json\\s*([\\s\\S]*?)\\s*```/i);\n  if (!match) {\n    // si no hay bloque, lo ignoramos\n    continue;\n  }\n  let jsonString = match[1].trim();\n\n  // 2) Intentar parsear. Si falla, aplicar reparación mínima y volver a parsear.\n  let parsed;\n  try {\n    parsed = JSON.parse(jsonString);\n  } catch (e1) {\n    // intentamos reparar cadenas sin terminar y llaves faltantes\n    try {\n      const reparado = intentarReparar(jsonString);\n      parsed = JSON.parse(reparado);\n    } catch (e2) {\n      // Si sigue dando error, lo descartamos\n      console.warn('JSON inválido, omitiendo item:', e2.message);\n      continue;\n    }\n  }\n\n  // 3) Normalizar a array\n  const arr = Array.isArray(parsed) ? parsed : [parsed];\n\n  // 4) Extraer campos y acumular\n  arr.forEach(o => {\n    output.push({\n      json: {\n        titulo: o.titulo,\n        aplica: o.aplica,\n        razon:  o.razon,\n        resumen: o.resumen,\n        plazos: o.plazos,\n        cuantia: o.cuantia,\n        fecha_salida: o.fecha_salida,\n        requisitos: o.requisitos,\n        hitos_importantes: o.hitos_importantes,\n        link: o.link,\n        fecha: o.fecha, \n        tipo_convocatoria: o.tipo_convocatoria, \n        requerimientos_ISO: o.requerimientos_ISO\n      }\n    });\n  });\n}\n\nreturn output;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        0
+      ],
+      "id": "5087bea5-0a54-480b-b09d-c98b222509d8",
+      "name": "Separar respuesta1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2db9e64b-a13d-465e-ae1c-31c8c65a81f6",
+              "name": "ID",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "c43721a6-2adc-494b-aa83-a1deb4102083",
+              "name": "Titulo",
+              "value": "={{ $json.titulo }}",
+              "type": "string"
+            },
+            {
+              "id": "22af45a9-4a36-473a-b71c-e7c29c92bfb0",
+              "name": "Resumen",
+              "value": "={{ $json.resumen }}",
+              "type": "string"
+            },
+            {
+              "id": "87870724-8266-49a2-a053-bf147e21bfbf",
+              "name": "Link_PDF",
+              "value": "={{ $json.link }}",
+              "type": "string"
+            },
+            {
+              "id": "3862b322-8c78-4287-b63d-42f300713a3a",
+              "name": "Requisitos",
+              "value": "={{ $json.requisitos }}",
+              "type": "string"
+            },
+            {
+              "id": "ef66ac77-51d4-4add-911c-69673018d6ea",
+              "name": "Fecha_Salida",
+              "value": "={{$json.fecha_salida}}",
+              "type": "string"
+            },
+            {
+              "id": "b1cc2c42-4a6e-4b6c-9edb-f6059d6d3776",
+              "name": "Plazos",
+              "value": "={{ $json.plazos }}",
+              "type": "string"
+            },
+            {
+              "id": "8eff31cd-814b-4cae-b0c5-76642b978c93",
+              "name": "Requerimientos_ISO",
+              "value": "={{$json.requerimientos_ISO}}",
+              "type": "string"
+            },
+            {
+              "id": "3cfb8a9b-0395-40ee-8191-82ad4f19f016",
+              "name": "Hitos relevantes",
+              "value": "={{ $json.hitos_importantes }}",
+              "type": "string"
+            },
+            {
+              "id": "1d1a91c8-44a1-44d2-93e4-8bf775d8b539",
+              "name": "Cuantía",
+              "value": "={{$json.cuantia}}",
+              "type": "string"
+            },
+            {
+              "id": "27e252b0-5df6-4a94-8c1f-e3d0f750b3b9",
+              "name": "Fecha",
+              "value": "={{$json.fecha}}",
+              "type": "string"
+            },
+            {
+              "id": "917d9f3b-3d7c-4542-9771-a9285cd78ca9",
+              "name": "Tipo Convocatoria",
+              "value": "={{ $json.tipo_convocatoria }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1360,
+        140
+      ],
+      "id": "d33f1528-a231-43ea-82db-aee6fba11c5f",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "tableId": "subvenciones_wavext",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "id",
+              "fieldValue": "={{ $json.ID }}"
+            },
+            {
+              "fieldId": "Título",
+              "fieldValue": "={{ $json.Titulo }}"
+            },
+            {
+              "fieldId": "Resumen",
+              "fieldValue": "={{ $json.Resumen }}"
+            },
+            {
+              "fieldId": "Link PDF",
+              "fieldValue": "={{ $json.Link_PDF }}"
+            },
+            {
+              "fieldId": "Requisitos",
+              "fieldValue": "={{ $json.Requisitos }}"
+            },
+            {
+              "fieldId": "Fecha Salida",
+              "fieldValue": "={{ $json.Fecha_Salida }}"
+            },
+            {
+              "fieldId": "Plazos",
+              "fieldValue": "={{ $json.Plazos }}"
+            },
+            {
+              "fieldId": "Hitos Relevantes",
+              "fieldValue": "={{ $json['Hitos relevantes'] }}"
+            },
+            {
+              "fieldId": "Cuantía",
+              "fieldValue": "={{ $json['Cuantía'] }}"
+            },
+            {
+              "fieldId": "Fecha",
+              "fieldValue": "={{$json.Fecha}}"
+            },
+            {
+              "fieldId": "Tipo Convocatoria",
+              "fieldValue": "={{$json.Tipo_Convocatoria}}"
+            },
+            {
+              "fieldId": "Requerimientos ISO",
+              "fieldValue": "={{$json.Requerimientos_ISO}}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        140
+      ],
+      "id": "a66fafee-fd9e-409d-92e8-483f7bbec848",
+      "name": "Create a row3",
+      "credentials": {
+        "supabaseApi": {
+          "id": "UGQiVcQo6h6GzvCF",
+          "name": "Supabase account 5"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Filter2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Separar respuesta1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ID BOE": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET LINK BOE": {
+      "main": [
+        [
+          {
+            "node": "HTML1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTML1": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter2": {
+      "main": [
+        [
+          {
+            "node": "Code1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter29": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items2": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "GET LINK BOE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Filter29",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar respuesta1": {
+      "main": [
+        [
+          {
+            "node": "ID BOE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Create a row3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "84c23a00-9cc8-456d-b7a8-8c0fa28d3e5e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8e3a0ff23e27e118cd487844fe5fe6bcbd92c3a7c61be705481b4f23bfd511ca"
+  },
+  "id": "wqBEKJ1VyR2ON4mb",
+  "tags": []
+}
